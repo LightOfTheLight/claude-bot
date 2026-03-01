@@ -1,0 +1,18 @@
+# Dependencies — installed fresh inside the image
+node_modules/
+
+# Environment files — never bake secrets into the image
+.env
+.env.*
+!.env.example
+
+# Dev / tooling
+.git/
+.gitignore
+*.md
+.eslintrc*
+.prettierrc*
+
+# OS artifacts
+.DS_Store
+Thumbs.db

@@ -1,0 +1,6 @@
+node_modules/
+.env
+npm.tgz
+package/
+.claude/
+*.memory-card.json

@@ -1,0 +1,33 @@
+{
+  "name": "claude-bot",
+  "version": "1.0.0",
+  "description": "A modular Claude AI bot for multiple messaging platforms",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "start:discord": "cross-env ADAPTERS=discord node src/index.js",
+    "start:slack": "cross-env ADAPTERS=slack node src/index.js",
+    "start:telegram": "cross-env ADAPTERS=telegram node src/index.js",
+    "start:whatsapp": "cross-env ADAPTERS=whatsapp node src/index.js",
+    "start:wechat": "cross-env ADAPTERS=wechat node src/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.0",
+    "@slack/bolt": "^3.22.0",
+    "axios": "^1.7.9",
+    "discord.js": "^14.16.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "telegraf": "^4.16.3",
+    "wechaty": "^1.20.2",
+    "wechaty-puppet-wechat4u": "^1.14.14"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
