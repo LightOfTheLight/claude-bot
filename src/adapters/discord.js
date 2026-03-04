@@ -19,6 +19,7 @@ export function start() {
   });
 
   client.on(Events.MessageCreate, async (message) => {
+    console.log(`[Discord] msg from ${message.author.tag} | bot=${message.author.bot} | content="${message.content}" | mentioned=${message.mentions.has(client.user)}`);
     if (message.author.bot) return;
 
     const isMentioned = message.mentions.has(client.user);
