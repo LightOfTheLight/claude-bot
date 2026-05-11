@@ -1,0 +1,48 @@
+{
+  "title": "ClaudeBot",
+  "uid": "claudebot-v2",
+  "schemaVersion": 38,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Message rate (by intent)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [{ "datasource": "Prometheus", "expr": "rate(bot_messages_total[5m])", "legendFormat": "{{intent}}" }]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Gateway latency P50/P95/P99 (ms)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "datasource": "Prometheus", "expr": "histogram_quantile(0.50, rate(bot_gateway_request_duration_bucket[5m]))", "legendFormat": "P50" },
+        { "datasource": "Prometheus", "expr": "histogram_quantile(0.95, rate(bot_gateway_request_duration_bucket[5m]))", "legendFormat": "P95" },
+        { "datasource": "Prometheus", "expr": "histogram_quantile(0.99, rate(bot_gateway_request_duration_bucket[5m]))", "legendFormat": "P99" }
+      ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Skills generated",
+      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 4 },
+      "targets": [{ "datasource": "Prometheus", "expr": "sum(bot_skills_generated_total)", "legendFormat": "" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Dreaming reviews",
+      "gridPos": { "x": 6, "y": 8, "w": 6, "h": 4 },
+      "targets": [{ "datasource": "Prometheus", "expr": "sum(bot_dreaming_reviews_total)", "legendFormat": "" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Active threads (24h)",
+      "gridPos": { "x": 12, "y": 8, "w": 6, "h": 4 },
+      "targets": [{ "datasource": "Prometheus", "expr": "bot_active_threads", "legendFormat": "" }]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Gateway health failures",
+      "gridPos": { "x": 18, "y": 8, "w": 6, "h": 4 },
+      "targets": [{ "datasource": "Prometheus", "expr": "sum(bot_gateway_health_failures)", "legendFormat": "" }]
+    },
+    {
+      "id": 7, "type": "logs", "title": "Jaeger traces",
+      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 8 },
+      "datasource": "Jaeger",
+      "targets": [{ "datasource": "Jaeger", "queryType": "search", "service": "claudebot" }]
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: claudebot
+    folder: ClaudeBot
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

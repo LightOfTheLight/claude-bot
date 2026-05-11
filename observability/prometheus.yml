@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: claudebot
+    static_configs:
+      - targets: ['claude-bot:9464']

@@ -1,23 +1,19 @@
 import 'dotenv/config';
 import express from 'express';
+import { initDb } from './memory/db.js';
+import { checkGatewayHealth } from './core/claude.js';
 
 const app = express();
 app.use(express.json());
 
-// Health check — required by the Docker Compose healthcheck
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-/**
- * Auto-detect which adapters to start based on available env vars.
- * Overridden by the ADAPTERS env var (comma-separated, e.g. "discord,telegram").
- */
 function resolveAdapters() {
   if (process.env.ADAPTERS) {
     return process.env.ADAPTERS.split(',').map((a) => a.trim().toLowerCase());
   }
-
-  // Returns true only if the var is set and not still a placeholder value
-  const isConfigured = (...vars) => vars.every((v) => process.env[v] && !process.env[v].startsWith('your_') && !process.env[v].includes('-your-'));
+  const isConfigured = (...vars) =>
+    vars.every((v) => process.env[v] && !process.env[v].startsWith('your_') && !process.env[v].includes('-your-'));
 
   const detected = [];
   if (isConfigured('DISCORD_BOT_TOKEN')) detected.push('discord');
@@ -26,12 +22,14 @@ function resolveAdapters() {
   if (isConfigured('WHATSAPP_ACCESS_TOKEN')) detected.push('whatsapp');
   if (isConfigured('WECHATY_TOKEN')) detected.push('wechat');
 
-  if (detected.length === 0) {
-    console.warn('[index] No adapter credentials found. Set at least one platform token in .env');
+  if (!detected.length) {
+    console.warn('[index] No adapter credentials found — set at least one platform token in .env');
   }
-
   return detected;
 }
+
+// Collect sendOwnerDM handles from adapters that support it
+const ownerDMHandles = [];
 
 async function startAdapters(adapters) {
   for (const name of adapters) {
@@ -39,7 +37,8 @@ async function startAdapters(adapters) {
       switch (name) {
         case 'discord': {
           const { start } = await import('./adapters/discord.js');
-          start();
+          const handle = start();
+          if (handle?.sendOwnerDM) ownerDMHandles.push(handle.sendOwnerDM);
           break;
         }
         case 'slack': {
@@ -54,7 +53,7 @@ async function startAdapters(adapters) {
         }
         case 'whatsapp': {
           const { register } = await import('./adapters/whatsapp.js');
-          register(app); // mounts routes on the shared Express app
+          register(app);
           break;
         }
         case 'wechat': {
@@ -66,16 +65,54 @@ async function startAdapters(adapters) {
           console.warn(`[index] Unknown adapter: "${name}" — skipping`);
       }
     } catch (err) {
-      console.error(`[index] Failed to start adapter "${name}": ${err.message}`);
+      console.error(`[index] Failed to start adapter "${name}":`, err.message);
     }
+  }
+}
+
+async function sendOwnerAlert(text) {
+  for (const fn of ownerDMHandles) {
+    try { await fn(text); } catch {}
   }
 }
 
 const PORT = process.env.PORT ?? 3000;
 
 app.listen(PORT, async () => {
-  console.log(`[index] HTTP server listening on port ${PORT}`);
+  console.log(`[index] HTTP server on port ${PORT}`);
+
+  // Initialise SQLite (runs migrations)
+  await initDb();
+  console.log('[index] Database ready');
+
+  // Gateway health check before starting adapters
+  let pendingStartupAlert = false;
+  const healthy = await checkGatewayHealth();
+  if (healthy) {
+    console.log('[index] AI gateway reachable');
+  } else {
+    console.warn('[index] AI gateway unreachable at startup — will alert owner once Discord connects');
+    pendingStartupAlert = true;
+  }
+
+  // Start adapters
   const adapters = resolveAdapters();
   console.log(`[index] Starting adapters: ${adapters.join(', ') || 'none'}`);
   await startAdapters(adapters);
+
+  // Send deferred startup alert now that adapters (and DM channel) are online
+  if (pendingStartupAlert) {
+    setTimeout(async () => {
+      await sendOwnerAlert('⚠️ Bot started but AI gateway was unreachable. Check that `ai-gateway` is running on port 4242.');
+    }, 3000); // give Discord a moment to connect
+  }
+
+  // Start scheduler (after DB is ready)
+  try {
+    const { startScheduler } = await import('./scheduler/index.js');
+    startScheduler({ sendOwnerAlert });
+    console.log('[index] Scheduler started');
+  } catch {
+    // Scheduler module not yet present (Week 1/2) — skip silently
+  }
 });

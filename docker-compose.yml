@@ -1,22 +1,55 @@
 services:
   claude-bot:
     build: .
-    image: claude-bot:latest
+    image: claudebot:${IMAGE_TAG:-latest}
     restart: unless-stopped
     env_file:
       - .env
     ports:
-      # Expose for platforms that use inbound webhooks (e.g. WhatsApp)
       - "3000:3000"
+      - "9464:9464"   # Prometheus metrics scrape
     volumes:
-      # Persist Wechaty session data (QR login) across restarts
+      - ${CLAUDE_SKILLS_DIR:-${HOME}/.claude/skills}:/root/.claude/skills
+      - ./data:/app/data
       - wechaty-data:/app/.wechaty
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1))"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
+
+  # ── Observability sidecar (opt-in: docker-compose --profile observe up) ──────
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    profiles: [observe]
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP HTTP receiver
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles: [observe]
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles: [observe]
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/ds.yml
+      - ./observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/db.yml
+      - ./observability/dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "3001:3000"
 
 volumes:
   wechaty-data:
