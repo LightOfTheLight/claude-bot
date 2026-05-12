@@ -222,6 +222,33 @@ export function resetThread(userId) {
   `).run(Date.now(), userId);
 }
 
+// ─── Bot state ────────────────────────────────────────────────────────────────
+
+export function setBotState(key, value) {
+  getDb().prepare(
+    'INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)'
+  ).run(key, String(value));
+}
+
+export function getBotState(key) {
+  const row = getDb().prepare('SELECT value FROM bot_state WHERE key = ?').get(key);
+  return row?.value ?? null;
+}
+
+export function trackChannel(platform, channelId, guildId = null) {
+  getDb().prepare(`
+    INSERT INTO active_channels (platform, channel_id, guild_id, last_seen)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(platform, channel_id) DO UPDATE SET last_seen = excluded.last_seen, guild_id = excluded.guild_id
+  `).run(platform, channelId, guildId, Date.now());
+}
+
+export function getActiveChannels(platform) {
+  return getDb().prepare(
+    'SELECT channel_id, guild_id FROM active_channels WHERE platform = ?'
+  ).all(platform);
+}
+
 // ─── Reminders ────────────────────────────────────────────────────────────────
 
 export function createReminder(userId, { message, fireAt, platform }) {

@@ -6,9 +6,17 @@
  *
  * SSE response format: OpenAI chat.completion.chunk events.
  * Tool use is detected via delta.tool_calls[].id (new tool call start).
+ *
+ * Fallback: callClaudeCLI() spawns `claude -p` via bash when all gateway
+ * providers are exhausted. The CLI uses a separate Anthropic quota tier
+ * that isn't reachable via plain HTTP.
  */
 
 import { trace, SpanStatusCode, context, propagation } from '@opentelemetry/api';
+import { spawn } from 'node:child_process';
+import { writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:4242';
 const DEFAULT_MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
@@ -74,6 +82,91 @@ function reconstruct(events) {
   return { text: text.trim(), toolCalls, toolUseCount: toolCalls.length };
 }
 
+// ─── Claude CLI fallback ──────────────────────────────────────────────────────
+
+const CLAUDE_BIN      = process.env.CLAUDE_BIN ?? 'claude';
+const CLAUDE_WORK_DIR = process.env.CLAUDE_WORK_DIR ?? 'C:\\Users\\Admin\\WorkPlace';
+
+/**
+ * Call Claude via the `claude -p` CLI subprocess, bypassing the local gateway.
+ * The CLI uses a separate Anthropic quota tier not accessible via plain HTTP.
+ * Prompt is written to a temp file and piped via bash to avoid Windows
+ * argument-length and escaping limits.
+ * OAuth env vars are stripped so the CLI uses ~/.claude/.credentials.json.
+ *
+ * @param {object} opts
+ * @param {Array<{role: string, content: string}>} opts.messages
+ * @param {string} [opts.system]
+ * @returns {Promise<{text: string, toolCalls: [], toolUseCount: 0}>}
+ */
+export async function callClaudeCLI({ messages, system, onChunk }) {
+  const parts = [];
+  if (system) parts.push(`System: ${system}\n`);
+  for (const m of messages) {
+    parts.push(`${m.role === 'user' ? 'Human' : 'Assistant'}: ${m.content}`);
+  }
+  const prompt = parts.join('\n\n');
+
+  // Strip OAuth tokens — CLI rejects them as invalid API keys and should use
+  // ~/.claude/.credentials.json directly for the Claude Code quota tier.
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.ANTHROPIC_BASE_URL;
+  delete cleanEnv.GATEWAY_URL;
+  if (cleanEnv.ANTHROPIC_API_KEY?.startsWith('sk-ant-oat')) delete cleanEnv.ANTHROPIC_API_KEY;
+  delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
+  delete cleanEnv.ANTHROPIC_AUTH_TOKEN;
+
+  // Write to temp file — avoids Windows CLI arg-length/escaping limits
+  const tmpFile = join(tmpdir(), `claude-bot-${Date.now()}.txt`);
+  writeFileSync(tmpFile, prompt, 'utf8');
+
+  const toUnix = (p) => p.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`);
+  const binPath  = toUnix(CLAUDE_BIN);
+  const filePath = toUnix(tmpFile);
+  const workDir  = toUnix(CLAUDE_WORK_DIR);
+
+  console.log('[claude-cli] Falling back to Claude CLI subprocess');
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'bash',
+      ['-c', `cat "${filePath}" | "${binPath}" --add-dir "${workDir}" --dangerously-skip-permissions -p`],
+      {
+        cwd  : CLAUDE_WORK_DIR,
+        env  : cleanEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => {
+      stdout += d;
+      if (onChunk) onChunk(d.toString());
+    });
+    child.stderr.on('data', (d) => { stderr += d; });
+
+    const cleanup = () => { try { unlinkSync(tmpFile); } catch {} };
+
+    const timer = setTimeout(() => {
+      child.kill();
+      cleanup();
+      reject(new Error('Claude CLI timed out after 120s'));
+    }, 120_000);
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      cleanup();
+      if (code !== 0) {
+        reject(new Error(`claude CLI exited ${code}: ${stderr.slice(0, 300)}`));
+      } else {
+        resolve({ text: stdout.trim(), toolCalls: [], toolUseCount: 0 });
+      }
+    });
+    child.on('error', (err) => { clearTimeout(timer); cleanup(); reject(err); });
+  });
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -87,7 +180,7 @@ function reconstruct(events) {
  * @param {number} [opts.maxTokens]
  * @returns {Promise<{text: string, toolCalls: Array, toolUseCount: number}>}
  */
-export async function callGateway(opts) {
+export async function callGateway(opts, _retried = false) {
   const {
     messages,
     system,
@@ -122,6 +215,37 @@ export async function callGateway(opts) {
 
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
+
+        // OAuth token expired — sync from ~/.claude/.credentials.json, restart, retry once
+        if (!_retried && errText.includes('invalid_grant')) {
+          console.warn('[claude] invalid_grant — syncing tokens and restarting gateway');
+          try {
+            const { syncAndRestart } = await import('./gateway-manager.js');
+            await syncAndRestart();
+          } catch (syncErr) {
+            console.error('[claude] Token sync/restart failed:', syncErr.message);
+          }
+          span.end();
+          return callGateway(opts, true);
+        }
+
+        // All gateway providers exhausted — fall back to CLI subprocess
+        if (res.status === 503) {
+          console.warn('[claude] All gateway providers exhausted — falling back to Claude CLI');
+          try {
+            span.end();
+            return await callClaudeCLI({ messages: opts.messages, system: opts.system });
+          } catch (cliErr) {
+            console.error('[claude] Claude CLI fallback failed:', cliErr.message);
+            let retryAfter = 60;
+            try { retryAfter = JSON.parse(errText)?.retry_after ?? 60; } catch {}
+            const err = new Error(`All providers exhausted — retry in ${retryAfter}s`);
+            err.code = 'GATEWAY_RATE_LIMITED';
+            err.retryAfter = retryAfter;
+            throw err;
+          }
+        }
+
         throw new Error(`Gateway ${res.status}: ${errText}`);
       }
 

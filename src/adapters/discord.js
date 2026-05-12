@@ -12,24 +12,16 @@ import {
   resetThread,
   createLinkToken,
   consumeLinkToken,
-  createReminder,
+  setBotState,
+  getBotState,
+  trackChannel,
+  getActiveChannels,
 } from '../memory/index.js';
 
 const tracer = trace.getTracer('claudebot', '2.0.0');
 const BOT_NAME = process.env.BOT_NAME ?? 'Claude';
 const OWNER_ID = process.env.DISCORD_OWNER_ID ?? '';
 
-// Lazily imported after routing modules are available
-let _router = null;
-let _runner = null;
-async function getRouter() {
-  if (!_router) _router = await import('../router/index.js');
-  return _router;
-}
-async function getRunner() {
-  if (!_runner) _runner = await import('../skills/runner.js');
-  return _runner;
-}
 
 // ─── Built-in commands ────────────────────────────────────────────────────────
 
@@ -134,61 +126,84 @@ async function handleMessage(text, platformId, platform, reply, sendTyping) {
       const handled = await handleCommand(text, userId, platform, reply);
       if (handled) { span.end(); return; }
 
-      // Load context
-      const { messages, summary, learnings } = getContext(userId);
-
-      // Append user message before calling LLM (so context includes it)
-      appendMessage(userId, { role: 'user', content: text, platform });
+      const { messages: history, summary, learnings } = getContext(userId);
 
       await sendTyping();
 
-      // Route intent (falls back to direct gateway call if router unavailable)
+      // Single call: CLI first (separate quota tier), gateway as fallback
+      const { callGateway, callClaudeCLI } = await import('../core/claude.js');
+      const system = buildSystem(summary, learnings);
+      const msgs = [...history, { role: 'user', content: text }];
       let responseText;
       let toolUseCount = 0;
 
-      try {
-        const router = await getRouter();
-        const intent = await router.classifyIntent(text, messages);
+      // Keep typing indicator alive during long CLI responses (expires after 10s)
+      const typingInterval = setInterval(() => sendTyping().catch(() => {}), 8000);
 
-        if (intent.intent === 'skill_dispatch' && intent.skill) {
-          const runner = await getRunner();
-          const result = await runner.runSkill(intent.skill, { messages, summary, learnings, userId });
-          responseText = result.text;
-          toolUseCount = result.toolUseCount;
-        } else if (intent.intent === 'reminder' && intent.fire_at && intent.message) {
-          // Validate fire_at (Reviewer Concern #5)
-          const fireTs = Date.parse(intent.fire_at);
-          if (!Number.isFinite(fireTs)) throw new Error('invalid fire_at from router');
-          createReminder(userId, { message: intent.message, fireAt: fireTs, platform });
-          responseText = `Got it — I'll remind you: "${intent.message}" at ${new Date(fireTs).toLocaleString()}.`;
+      try {
+        // Try streaming CLI first
+        let liveMsg = null;
+        let accumulated = '';
+        let lastEdit = 0;
+
+        const result = await callClaudeCLI({
+          messages: msgs,
+          system,
+          onChunk: async (chunk) => {
+            accumulated += chunk;
+            const now = Date.now();
+            if (now - lastEdit > 1200) {
+              lastEdit = now;
+              const preview = accumulated.slice(-1900) + '▌';
+              try {
+                if (!liveMsg) {
+                  liveMsg = await reply(preview);
+                } else {
+                  await liveMsg.edit(preview);
+                }
+              } catch {
+                // edit failed — ignore, we'll set the final message anyway
+              }
+            }
+          },
+        });
+        responseText = result.text;
+
+        // Finalize: edit or send the complete response
+        if (liveMsg) {
+          if (responseText.length <= 2000) {
+            await liveMsg.edit(responseText).catch(() => {});
+          } else {
+            // Too long to fit in one edit — delete placeholder and send chunks
+            await liveMsg.delete().catch(() => {});
+            await sendReply(reply, responseText);
+          }
         } else {
-          // General query: direct gateway call with memory context
-          const { callGateway } = await import('../core/claude.js');
-          const system = buildSystem(summary, learnings);
-          const result = await callGateway({ messages, system });
-          responseText = result.text;
-          toolUseCount = result.toolUseCount;
+          await sendReply(reply, responseText);
         }
-      } catch (routerErr) {
-        // Router unavailable (Week 1: modules not yet present) — fall back to direct call
-        const { callGateway } = await import('../core/claude.js');
-        const system = buildSystem(summary, learnings);
-        const result = await callGateway({ messages, system });
+      } catch {
+        const result = await callGateway({ messages: msgs, system });
         responseText = result.text;
         toolUseCount = result.toolUseCount;
+        await sendReply(reply, responseText);
+      } finally {
+        clearInterval(typingInterval);
       }
 
-      // Persist assistant response + tool use count
+      // Persist both turns only after a successful response
+      appendMessage(userId, { role: 'user', content: text, platform });
       appendMessage(userId, { role: 'assistant', content: responseText, platform });
       if (toolUseCount) incrementToolUse(userId, toolUseCount);
-
-      await sendReply(reply, responseText);
 
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (err) {
       span.recordException(err);
       span.setStatus({ code: SpanStatusCode.ERROR });
-      await reply('Sorry, something went wrong.').catch(() => {});
+      if (err.code === 'GATEWAY_RATE_LIMITED') {
+        await reply(`⏳ AI providers are rate-limited. Try again in ${err.retryAfter}s.`).catch(() => {});
+      } else {
+        await reply('Sorry, something went wrong.').catch(() => {});
+      }
     } finally {
       span.end();
     }
@@ -217,6 +232,70 @@ async function sendReply(reply, text) {
   }
 }
 
+// ─── Catch-up on missed messages ─────────────────────────────────────────────
+
+/** Convert a JS timestamp (ms) to a Discord snowflake string for use as `after:` cursor. */
+function timestampToSnowflake(ms) {
+  return String((BigInt(ms - 1420070400000) << 22n));
+}
+
+/**
+ * On startup, scan all known active channels for messages sent while the bot
+ * was offline and process the last unanswered one per channel.
+ */
+async function catchUpMissedMessages(client) {
+  const lastOnline = getBotState('lastOnline');
+  if (!lastOnline) return; // first boot — nothing to catch up
+
+  const since = parseInt(lastOnline, 10);
+  const afterSnowflake = timestampToSnowflake(since);
+  const channels = getActiveChannels('discord');
+
+  console.log(`[Discord] catch-up: scanning ${channels.length} channel(s) for messages since ${new Date(since).toISOString()}`);
+
+  for (const { channel_id } of channels) {
+    try {
+      const channel = await client.channels.fetch(channel_id).catch(() => null);
+      if (!channel) continue;
+
+      const fetched = await channel.messages.fetch({ after: afterSnowflake, limit: 50 });
+      if (!fetched.size) continue;
+
+      // Sort oldest → newest
+      const sorted = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+      // Find messages directed at the bot (DM or mention)
+      const isDM = channel.type === 1;
+      const directed = sorted.filter((m) =>
+        !m.author.bot && (isDM || m.mentions.has(client.user))
+      );
+      if (!directed.length) continue;
+
+      // Check if the bot already replied after the last directed message
+      const lastDirected = directed[directed.length - 1];
+      const botRepliedAfter = sorted.some(
+        (m) => m.author.id === client.user.id && m.createdTimestamp > lastDirected.createdTimestamp
+      );
+      if (botRepliedAfter) continue;
+
+      const text = lastDirected.content.replace(/<@!?\d+>/g, '').trim();
+      if (!text) continue;
+
+      console.log(`[Discord] catch-up: answering missed message in channel ${channel_id} from ${lastDirected.author.id}`);
+
+      await handleMessage(
+        text,
+        lastDirected.author.id,
+        'discord',
+        (r) => lastDirected.reply(r),
+        () => channel.sendTyping(),
+      );
+    } catch (err) {
+      console.warn(`[Discord] catch-up failed for channel ${channel_id}:`, err.message);
+    }
+  }
+}
+
 // ─── Adapter start ────────────────────────────────────────────────────────────
 
 export function start() {
@@ -232,9 +311,16 @@ export function start() {
     ],
   });
 
-  client.once(Events.ClientReady, (c) => {
+  client.once(Events.ClientReady, async (c) => {
     console.log(`[Discord] Logged in as ${c.user.tag}`);
+    // Small delay to let the gateway fully settle before fetching channel history
+    setTimeout(() => catchUpMissedMessages(c).catch((err) => {
+      console.warn('[Discord] catch-up error:', err.message);
+    }), 3000);
   });
+
+  // Deduplicate: ignore a message ID we're already processing
+  const _inFlight = new Set();
 
   client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return;
@@ -245,13 +331,38 @@ export function start() {
     const text = message.content.replace(/<@!?\d+>/g, '').trim();
     if (!text) return;
 
-    await handleMessage(
-      text,
-      message.author.id,
-      'discord',
-      (r) => message.reply(r),
-      () => message.channel.sendTyping(),
-    );
+    if (_inFlight.has(message.id)) {
+      console.warn(`[Discord] duplicate MessageCreate for ${message.id} — skipping`);
+      return;
+    }
+    _inFlight.add(message.id);
+    console.log(`[Discord] message ${message.id} from ${message.author.id} — "${text.slice(0, 60)}"`);
+
+    // Track this channel so catch-up knows where to look on next restart
+    trackChannel('discord', message.channel.id, message.guild?.id ?? null);
+    // Heartbeat: record we were alive at this moment
+    setBotState('lastOnline', String(Date.now()));
+
+    let _replyN = 0;
+    const trackedReply = (r) => {
+      _replyN++;
+      const preview = String(r).slice(0, 80);
+      const stack = new Error().stack.split('\n').slice(2, 5).join(' | ');
+      console.log(`[Discord] reply #${_replyN} for msg ${message.id}: "${preview}" @ ${stack}`);
+      return message.reply(r);
+    };
+
+    try {
+      await handleMessage(
+        text,
+        message.author.id,
+        'discord',
+        trackedReply,
+        () => message.channel.sendTyping(),
+      );
+    } finally {
+      _inFlight.delete(message.id);
+    }
   });
 
   client.on('error', (err) => console.error('[Discord]', err.message));

@@ -31,12 +31,20 @@ export async function maybeSummarize(userId) {
 
   try {
     // Lazy import to avoid circular dependency at module load time
-    const { callGateway } = await import('../core/claude.js');
-    const { text } = await callGateway({
-      messages: [{ role: 'user', content: prompt }],
-      system: 'Summarize the following conversation into 2-3 sentences capturing key topics, decisions, and user preferences. Be factual and concise.',
-      maxTokens: 256,
-    });
+    const { callClaudeCLI, callGateway } = await import('../core/claude.js');
+    let text;
+    try {
+      ({ text } = await callClaudeCLI({
+        messages: [{ role: 'user', content: prompt }],
+        system: 'Summarize the following conversation into 2-3 sentences capturing key topics, decisions, and user preferences. Be factual and concise.',
+      }));
+    } catch {
+      ({ text } = await callGateway({
+        messages: [{ role: 'user', content: prompt }],
+        system: 'Summarize the following conversation into 2-3 sentences capturing key topics, decisions, and user preferences. Be factual and concise.',
+        maxTokens: 256,
+      }));
+    }
 
     db.prepare('UPDATE threads SET messages = ?, summary = ?, updated_at = ? WHERE user_id = ?')
       .run(JSON.stringify(remaining), text.trim(), Date.now(), userId);

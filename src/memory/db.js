@@ -7,7 +7,8 @@ const DB_PATH = process.env.DB_PATH ?? './data/claudebot.db';
 // Schema versions
 const SCHEMA_V1 = 1; // core tables
 const SCHEMA_V2 = 2; // message_log (append-only, Week 3)
-const TARGET_VERSION = SCHEMA_V2;
+const SCHEMA_V3 = 3; // bot_state, active_channels (catch-up on restart)
+const TARGET_VERSION = SCHEMA_V3;
 
 let _db = null;
 
@@ -34,6 +35,9 @@ export async function initDb() {
   }
   if (version < SCHEMA_V2) {
     await migrateV2(_db);
+  }
+  if (version < SCHEMA_V3) {
+    migrateV3(_db);
   }
 
   return _db;
@@ -169,4 +173,26 @@ function migrateV2(db) {
 
   db.pragma('user_version = 2');
   console.log(`[db] schema v2 applied — backfilled ${threads.length} thread(s) into message_log`);
+}
+
+// ─── V3: bot_state + active_channels ─────────────────────────────────────────
+
+function migrateV3(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bot_state (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS active_channels (
+      platform   TEXT NOT NULL,
+      channel_id TEXT NOT NULL,
+      guild_id   TEXT,
+      last_seen  INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (platform, channel_id)
+    );
+  `);
+
+  db.pragma('user_version = 3');
+  console.log('[db] schema v3 applied — bot_state, active_channels');
 }

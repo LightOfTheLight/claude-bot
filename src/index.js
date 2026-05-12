@@ -78,6 +78,16 @@ async function sendOwnerAlert(text) {
 
 const PORT = process.env.PORT ?? 3000;
 
+// Save lastOnline timestamp on graceful shutdown so catch-up knows the cutoff
+async function saveLastOnline() {
+  try {
+    const { setBotState } = await import('./memory/index.js');
+    setBotState('lastOnline', String(Date.now()));
+  } catch {}
+}
+process.on('SIGTERM', async () => { await saveLastOnline(); process.exit(0); });
+process.on('SIGINT',  async () => { await saveLastOnline(); process.exit(0); });
+
 app.listen(PORT, async () => {
   console.log(`[index] HTTP server on port ${PORT}`);
 
@@ -85,14 +95,27 @@ app.listen(PORT, async () => {
   await initDb();
   console.log('[index] Database ready');
 
-  // Gateway health check before starting adapters
+  // Sync OAuth tokens + ensure gateway is running
   let pendingStartupAlert = false;
-  const healthy = await checkGatewayHealth();
-  if (healthy) {
-    console.log('[index] AI gateway reachable');
-  } else {
-    console.warn('[index] AI gateway unreachable at startup — will alert owner once Discord connects');
-    pendingStartupAlert = true;
+  try {
+    const { syncAndRestart } = await import('./core/gateway-manager.js');
+    const healthy = await syncAndRestart();
+    if (healthy) {
+      console.log('[index] AI gateway ready (tokens synced, process started)');
+    } else {
+      console.warn('[index] Gateway started but health check timed out');
+      pendingStartupAlert = true;
+    }
+  } catch (err) {
+    // Gateway dir missing or credentials unavailable — fall back to health check only
+    console.warn('[index] Gateway manager unavailable:', err.message);
+    const healthy = await checkGatewayHealth();
+    if (healthy) {
+      console.log('[index] AI gateway reachable (external)');
+    } else {
+      console.warn('[index] AI gateway unreachable at startup — will alert owner once Discord connects');
+      pendingStartupAlert = true;
+    }
   }
 
   // Start adapters
