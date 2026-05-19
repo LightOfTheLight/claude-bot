@@ -14,8 +14,8 @@
 
 import { trace, SpanStatusCode, context, propagation } from '@opentelemetry/api';
 import { spawn } from 'node:child_process';
-import { writeFileSync, unlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
 const GATEWAY_URL = process.env.GATEWAY_URL ?? 'http://localhost:4242';
@@ -99,24 +99,55 @@ const CLAUDE_WORK_DIR = process.env.CLAUDE_WORK_DIR ?? 'C:\\Users\\Admin\\WorkPl
  * @param {string} [opts.system]
  * @returns {Promise<{text: string, toolCalls: [], toolUseCount: 0}>}
  */
-export async function callClaudeCLI({ messages, system, onChunk }) {
-  const parts = [];
-  if (system) parts.push(`System: ${system}\n`);
-  for (const m of messages) {
-    parts.push(`${m.role === 'user' ? 'Human' : 'Assistant'}: ${m.content}`);
+// ─── CLI session tracking ─────────────────────────────────────────────────────
+
+/**
+ * Convert a Windows/Unix work dir to the slug Claude Code uses for its
+ * project directory, e.g. C:\Users\Admin\WorkPlace → C--Users-Admin-WorkPlace
+ */
+function workDirToSlug(workDir) {
+  return workDir.replace(/:/g, '-').replace(/[\\\/]/g, '-');
+}
+
+/**
+ * Return the session ID (UUID filename) of the most recently touched .jsonl
+ * in the Claude Code project directory for CLAUDE_WORK_DIR.
+ * Returns null if the directory is missing or empty.
+ */
+function getNewestSessionId() {
+  try {
+    const projectDir = join(homedir(), '.claude', 'projects', workDirToSlug(CLAUDE_WORK_DIR));
+    const newest = readdirSync(projectDir)
+      .filter((f) => /^[0-9a-f-]{36}\.jsonl$/.test(f))
+      .map((f) => ({ id: f.slice(0, -6), mtime: statSync(join(projectDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)[0];
+    return newest?.id ?? null;
+  } catch {
+    return null;
   }
-  const prompt = parts.join('\n\n');
+}
 
-  // Strip OAuth tokens — CLI rejects them as invalid API keys and should use
-  // ~/.claude/.credentials.json directly for the Claude Code quota tier.
-  const cleanEnv = { ...process.env };
-  delete cleanEnv.ANTHROPIC_BASE_URL;
-  delete cleanEnv.GATEWAY_URL;
-  if (cleanEnv.ANTHROPIC_API_KEY?.startsWith('sk-ant-oat')) delete cleanEnv.ANTHROPIC_API_KEY;
-  delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
-  delete cleanEnv.ANTHROPIC_AUTH_TOKEN;
+/** Detect if a response is just asking for Y/N/edit confirmation. */
+function isConfirmationPrompt(text) {
+  // Matches patterns like [Y/n], [Y/edit/skip], [y/N], [yes/no], etc.
+  return /\[[Yy][\/|][^\]]{0,20}\]\s*$/.test(text.trim()) ||
+    /\b(proceed|continue|confirm|ready)\??\s*\[[Yy][^\]]*\]\s*$/i.test(text.trim());
+}
 
-  // Write to temp file — avoids Windows CLI arg-length/escaping limits
+/**
+ * Run a single CLI subprocess for a given prompt string.
+ *
+ * @param {string}    prompt
+ * @param {object}    cleanEnv
+ * @param {function}  [onChunk]     - called with each stdout chunk while streaming
+ * @param {function}  [onHeartbeat] - called every HEARTBEAT_MS while alive
+ * @param {string}    [sessionId]   - if set, passes --resume <sessionId> to continue
+ *                                    an existing Claude Code session instead of starting fresh
+ */
+function spawnCLI(prompt, cleanEnv, onChunk, onHeartbeat, sessionId) {
+  const HEARTBEAT_MS   = 15_000;   // ping caller every 15 s while alive
+  const INACTIVITY_MS  = 600_000;  // kill after 10 min of total silence
+
   const tmpFile = join(tmpdir(), `claude-bot-${Date.now()}.txt`);
   writeFileSync(tmpFile, prompt, 'utf8');
 
@@ -125,22 +156,21 @@ export async function callClaudeCLI({ messages, system, onChunk }) {
   const filePath = toUnix(tmpFile);
   const workDir  = toUnix(CLAUDE_WORK_DIR);
 
-  console.log('[claude-cli] Falling back to Claude CLI subprocess');
+  const resumeFlag = sessionId ? `--resume "${sessionId}"` : `--add-dir "${workDir}"`;
 
   return new Promise((resolve, reject) => {
     const child = spawn(
       'bash',
-      ['-c', `cat "${filePath}" | "${binPath}" --add-dir "${workDir}" --dangerously-skip-permissions -p`],
-      {
-        cwd  : CLAUDE_WORK_DIR,
-        env  : cleanEnv,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
+      ['-c', `cat "${filePath}" | "${binPath}" ${resumeFlag} --dangerously-skip-permissions --permission-mode bypassPermissions -p`],
+      { cwd: CLAUDE_WORK_DIR, env: cleanEnv, stdio: ['ignore', 'pipe', 'pipe'] },
     );
 
     let stdout = '';
     let stderr = '';
+    let lastActivity = Date.now();
+
     child.stdout.on('data', (d) => {
+      lastActivity = Date.now();
       stdout += d;
       if (onChunk) onChunk(d.toString());
     });
@@ -148,23 +178,127 @@ export async function callClaudeCLI({ messages, system, onChunk }) {
 
     const cleanup = () => { try { unlinkSync(tmpFile); } catch {} };
 
-    const timer = setTimeout(() => {
-      child.kill();
-      cleanup();
-      reject(new Error('Claude CLI timed out after 120s'));
-    }, 120_000);
+    // Heartbeat: fires every HEARTBEAT_MS while the process is alive.
+    // Kills the process if it has been silent for INACTIVITY_MS.
+    const heartbeat = setInterval(() => {
+      const idleMs = Date.now() - lastActivity;
+      if (idleMs >= INACTIVITY_MS) {
+        clearInterval(heartbeat);
+        child.kill();
+        cleanup();
+        reject(new Error(`Claude CLI timed out — no output for ${Math.round(idleMs / 1000)}s`));
+        return;
+      }
+      if (onHeartbeat) onHeartbeat(idleMs);
+    }, HEARTBEAT_MS);
 
     child.on('close', (code) => {
-      clearTimeout(timer);
-      cleanup();
-      if (code !== 0) {
-        reject(new Error(`claude CLI exited ${code}: ${stderr.slice(0, 300)}`));
-      } else {
-        resolve({ text: stdout.trim(), toolCalls: [], toolUseCount: 0 });
-      }
+      clearInterval(heartbeat); cleanup();
+      if (code !== 0) reject(new Error(`claude CLI exited ${code}: ${stderr.slice(0, 300)}`));
+      else resolve(stdout.trim());
     });
-    child.on('error', (err) => { clearTimeout(timer); cleanup(); reject(err); });
+    child.on('error', (err) => { clearInterval(heartbeat); cleanup(); reject(err); });
   });
+}
+
+function buildPrompt(messages, system) {
+  const parts = [];
+  if (system) parts.push(`System: ${system}\n`);
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    const isLast = i === messages.length - 1;
+    const content = (isLast && m.role === 'user') ? m.content + AUTONOMOUS_NOTE : m.content;
+    parts.push(`${m.role === 'user' ? 'Human' : 'Assistant'}: ${content}`);
+  }
+  return parts.join('\n\n');
+}
+
+const AUTONOMOUS_NOTE = '\n\n[Bot mode: execute autonomously, no confirmation needed, just act and report.]';
+
+/**
+ * Call Claude via the `claude -p` CLI subprocess.
+ *
+ * Session continuity (CLI-specific):
+ *   Pass `sessionId` to resume an existing Claude Code session.  When resuming,
+ *   only the latest user message is sent as the prompt — the CLI already holds
+ *   full tool-use history for that session.  The new session ID is returned so
+ *   callers can persist it for the next turn.
+ *   Falls back to a full-history prompt if the session ID is stale/missing.
+ *
+ * @param {object}   opts
+ * @param {Array}    opts.messages
+ * @param {string}   [opts.system]
+ * @param {function} [opts.onChunk]
+ * @param {function} [opts.onHeartbeat]
+ * @param {string}   [opts.sessionId]   - Claude Code session UUID to resume
+ * @returns {Promise<{text, toolCalls, toolUseCount, sessionId}>}
+ */
+export async function callClaudeCLI({ messages, system, onChunk, onHeartbeat, sessionId }) {
+  // Strip OAuth tokens — CLI must use ~/.claude/.credentials.json
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.ANTHROPIC_BASE_URL;
+  delete cleanEnv.GATEWAY_URL;
+  if (cleanEnv.ANTHROPIC_API_KEY?.startsWith('sk-ant-oat')) delete cleanEnv.ANTHROPIC_API_KEY;
+  delete cleanEnv.CLAUDE_CODE_OAUTH_TOKEN;
+  delete cleanEnv.ANTHROPIC_AUTH_TOKEN;
+
+  const MAX_AUTO_CONFIRMS = 5;
+  let currentSessionId = sessionId ?? null;
+  let usingResume = !!currentSessionId;
+
+  const makePrompt = (msgs, sys, overrideText) => {
+    if (overrideText !== undefined) return overrideText;
+    if (usingResume) {
+      // Resume mode: send only the latest user message — CLI has the rest
+      return msgs[msgs.length - 1].content + AUTONOMOUS_NOTE;
+    }
+    return buildPrompt(msgs, sys);
+  };
+
+  console.log(`[claude-cli] Starting CLI (${usingResume ? `resume ${currentSessionId.slice(0, 8)}…` : 'fresh'})`);
+
+  const currentMessages = [...messages];
+
+  for (let attempt = 0; attempt <= MAX_AUTO_CONFIRMS; attempt++) {
+    const overrideText = attempt > 0 ? 'Y' : undefined; // auto-confirm iterations
+    const prompt = makePrompt(currentMessages, system, overrideText);
+
+    let text;
+    try {
+      text = await spawnCLI(
+        prompt, cleanEnv,
+        attempt === 0 ? onChunk     : null,
+        attempt === 0 ? onHeartbeat : null,
+        attempt === 0 ? currentSessionId : currentSessionId, // always resume once we have an ID
+      );
+    } catch (err) {
+      if (usingResume && attempt === 0) {
+        // Session likely expired — retry as a fresh call with full history
+        console.warn(`[claude-cli] Resume failed (${err.message.slice(0, 80)}) — falling back to fresh start`);
+        usingResume = false;
+        currentSessionId = null;
+        text = await spawnCLI(
+          buildPrompt(currentMessages, system), cleanEnv,
+          onChunk, onHeartbeat, null,
+        );
+      } else {
+        throw err;
+      }
+    }
+
+    // Capture the session ID created/updated by this subprocess
+    currentSessionId = getNewestSessionId() ?? currentSessionId;
+
+    if (!isConfirmationPrompt(text) || attempt === MAX_AUTO_CONFIRMS) {
+      return { text, toolCalls: [], toolUseCount: 0, sessionId: currentSessionId };
+    }
+
+    console.log(`[claude-cli] Auto-confirming (attempt ${attempt + 1}): "${text.slice(-80)}"`);
+    currentMessages.push({ role: 'assistant', content: text });
+    currentMessages.push({ role: 'user', content: 'Y' });
+  }
+
+  throw new Error('Auto-confirm loop exhausted');
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -217,8 +351,11 @@ export async function callGateway(opts, _retried = false) {
         const errText = await res.text().catch(() => '');
 
         // OAuth token expired — sync from ~/.claude/.credentials.json, restart, retry once
-        if (!_retried && errText.includes('invalid_grant')) {
-          console.warn('[claude] invalid_grant — syncing tokens and restarting gateway');
+        // Anthropic returns 429 for expired tokens (not 401), so check both cases
+        const isAnthropicAuth = res.status === 401 || (res.status === 429 && errText.includes('invalid_grant'));
+        const isExpiredToken  = errText.includes('invalid_grant') || errText.includes('expired') || errText.includes('token');
+        if (!_retried && (isAnthropicAuth || (res.status === 401 && isExpiredToken))) {
+          console.warn('[claude] Auth error — syncing tokens and restarting gateway');
           try {
             const { syncAndRestart } = await import('./gateway-manager.js');
             await syncAndRestart();

@@ -66,8 +66,15 @@ export function syncTokens() {
   };
 
   for (const [k, v] of Object.entries(patch)) {
-    const re = new RegExp(`^${k}=.*$`, 'm');
-    env = re.test(env) ? env.replace(re, `${k}=${v}`) : `${env}\n${k}=${v}`;
+    const re = new RegExp(`^${k}=.*$`, 'gm');
+    if (re.test(env)) {
+      // Replace ALL occurrences (handles accidental duplicates)
+      env = env.replace(new RegExp(`^${k}=.*$`, 'gm'), `${k}=${v}`);
+    } else {
+      // Append — ensure file ends with a newline before adding
+      if (!env.endsWith('\n')) env += '\n';
+      env += `${k}=${v}\n`;
+    }
   }
 
   fs.writeFileSync(GATEWAY_ENV_PATH, env, 'utf8');

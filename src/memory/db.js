@@ -8,7 +8,12 @@ const DB_PATH = process.env.DB_PATH ?? './data/claudebot.db';
 const SCHEMA_V1 = 1; // core tables
 const SCHEMA_V2 = 2; // message_log (append-only, Week 3)
 const SCHEMA_V3 = 3; // bot_state, active_channels (catch-up on restart)
-const TARGET_VERSION = SCHEMA_V3;
+const SCHEMA_V4 = 4; // reminders: add channel_id for delivery routing
+const SCHEMA_V5 = 5; // reminders: add recur for recurring reminders
+const SCHEMA_V6 = 6; // message_log FTS5 virtual table for full-text search
+const SCHEMA_V7 = 7; // webhooks table
+const SCHEMA_V8 = 8; // traces table for persistent request trace storage
+const TARGET_VERSION = SCHEMA_V8;
 
 let _db = null;
 
@@ -38,6 +43,21 @@ export async function initDb() {
   }
   if (version < SCHEMA_V3) {
     migrateV3(_db);
+  }
+  if (version < SCHEMA_V4) {
+    migrateV4(_db);
+  }
+  if (version < SCHEMA_V5) {
+    migrateV5(_db);
+  }
+  if (version < SCHEMA_V6) {
+    migrateV6(_db);
+  }
+  if (version < SCHEMA_V7) {
+    migrateV7(_db);
+  }
+  if (version < SCHEMA_V8) {
+    migrateV8(_db);
   }
 
   return _db;
@@ -195,4 +215,97 @@ function migrateV3(db) {
 
   db.pragma('user_version = 3');
   console.log('[db] schema v3 applied — bot_state, active_channels');
+}
+
+// ─── V4: reminder delivery routing ───────────────────────────────────────────
+
+function migrateV4(db) {
+  db.exec(`
+    ALTER TABLE reminders ADD COLUMN channel_id TEXT;
+  `);
+  db.pragma('user_version = 4');
+  console.log('[db] schema v4 applied — reminders.channel_id');
+}
+
+// ─── V5: recurring reminders ─────────────────────────────────────────────────
+
+function migrateV5(db) {
+  db.exec(`
+    ALTER TABLE reminders ADD COLUMN recur TEXT;
+  `);
+  db.pragma('user_version = 5');
+  console.log('[db] schema v5 applied — reminders.recur');
+}
+
+// ─── V6: full-text search on message_log ─────────────────────────────────────
+
+function migrateV6(db) {
+  // FTS5 virtual table — content= makes it a content table (no data duplication)
+  // tokenize=porter enables stemming (search "run" matches "running", "ran")
+  try {
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS message_fts
+      USING fts5(content, content=message_log, content_rowid=id, tokenize='porter unicode61');
+
+      -- Triggers to keep FTS index in sync with message_log
+      CREATE TRIGGER IF NOT EXISTS message_log_ai AFTER INSERT ON message_log BEGIN
+        INSERT INTO message_fts(rowid, content) VALUES (new.id, new.content);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS message_log_ad AFTER DELETE ON message_log BEGIN
+        INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS message_log_au AFTER UPDATE ON message_log BEGIN
+        INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', old.id, old.content);
+        INSERT INTO message_fts(rowid, content) VALUES (new.id, new.content);
+      END;
+    `);
+
+    // Backfill existing messages into FTS index
+    db.exec(`INSERT INTO message_fts(rowid, content) SELECT id, content FROM message_log`);
+    console.log('[db] schema v6 applied — message_fts FTS5 (porter stemmer)');
+  } catch (err) {
+    // FTS5 not compiled in — log warning, search will fall back to LIKE
+    console.warn('[db] schema v6: FTS5 unavailable, skipping virtual table:', err.message);
+  }
+  db.pragma('user_version = 6');
+}
+
+// ─── V7: webhooks ─────────────────────────────────────────────────────────────
+
+function migrateV7(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(user_id),
+      name       TEXT NOT NULL,
+      token      TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_used  INTEGER,
+      active     INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_webhooks_user
+      ON webhooks(user_id, active);
+  `);
+  db.pragma('user_version = 7');
+  console.log('[db] schema v7 applied — webhooks');
+}
+
+// ─── V8: request traces ───────────────────────────────────────────────────────
+
+function migrateV8(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS traces (
+      id         TEXT PRIMARY KEY,
+      started_at INTEGER NOT NULL,
+      data       TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_traces_started_at
+      ON traces(started_at DESC);
+  `);
+  db.pragma('user_version = 8');
+  console.log('[db] schema v8 applied — traces');
 }

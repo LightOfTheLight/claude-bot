@@ -1,5 +1,11 @@
 import 'dotenv/config';
 import express from 'express';
+
+// Print a restart separator so log files are easy to scan across restarts
+const startedAt = new Date().toISOString();
+console.log(`\n${'─'.repeat(60)}`);
+console.log(`[index] *** BOT STARTING — ${startedAt} ***`);
+console.log(`${'─'.repeat(60)}\n`);
 import { initDb } from './memory/db.js';
 import { checkGatewayHealth } from './core/claude.js';
 
@@ -28,8 +34,9 @@ function resolveAdapters() {
   return detected;
 }
 
-// Collect sendOwnerDM handles from adapters that support it
+// Collect send handles from adapters that support them
 const ownerDMHandles = [];
+const platformSenders = {}; // platform → { sendDM, sendToChannel }
 
 async function startAdapters(adapters) {
   for (const name of adapters) {
@@ -39,6 +46,12 @@ async function startAdapters(adapters) {
           const { start } = await import('./adapters/discord.js');
           const handle = start();
           if (handle?.sendOwnerDM) ownerDMHandles.push(handle.sendOwnerDM);
+          if (handle?.sendDM || handle?.sendToChannel) {
+            platformSenders['discord'] = {
+              sendDM: handle.sendDM,
+              sendToChannel: handle.sendToChannel,
+            };
+          }
           break;
         }
         case 'slack': {
@@ -95,6 +108,25 @@ app.listen(PORT, async () => {
   await initDb();
   console.log('[index] Database ready');
 
+  // Load persisted traces into memory
+  try {
+    const { initTraceStore } = await import('./trace/index.js');
+    initTraceStore();
+  } catch (err) {
+    console.warn('[index] Trace store init failed:', err.message);
+  }
+
+  // Startup backup (runs after migrations so the backup reflects current schema)
+  try {
+    const { runBackup } = await import('./backup/index.js');
+    const result = await runBackup();
+    if (result.ok) {
+      console.log(`[index] Startup backup: ${result.path} (${(result.sizeBytes / 1024).toFixed(1)}KB)`);
+    }
+  } catch (err) {
+    console.warn('[index] Startup backup skipped:', err.message);
+  }
+
   // Sync OAuth tokens + ensure gateway is running
   let pendingStartupAlert = false;
   try {
@@ -133,9 +165,26 @@ app.listen(PORT, async () => {
   // Start scheduler (after DB is ready)
   try {
     const { startScheduler } = await import('./scheduler/index.js');
-    startScheduler({ sendOwnerAlert });
+    startScheduler({ sendOwnerAlert, platformSenders });
     console.log('[index] Scheduler started');
   } catch {
     // Scheduler module not yet present (Week 1/2) — skip silently
+  }
+
+  // Register webhook routes
+  try {
+    const { registerWebhookRoutes } = await import('./webhooks/index.js');
+    registerWebhookRoutes(app, { platformSenders, sendOwnerAlert });
+    console.log('[index] Webhook routes registered');
+  } catch (err) {
+    console.warn('[index] Webhook routes unavailable:', err.message);
+  }
+
+  // Register dashboard routes
+  try {
+    const { registerDashboardRoutes } = await import('./dashboard/index.js');
+    registerDashboardRoutes(app);
+  } catch (err) {
+    console.warn('[index] Dashboard routes unavailable:', err.message);
   }
 });

@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ClaudeBot Dashboard</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:        #0f1117;
+  --surface:   #1a1d27;
+  --surface2:  #22263a;
+  --border:    #2e3250;
+  --accent:    #5b8af7;
+  --green:     #34d399;
+  --yellow:    #fbbf24;
+  --red:       #f87171;
+  --orange:    #fb923c;
+  --purple:    #a78bfa;
+  --gray:      #6b7280;
+  --text:      #e2e8f0;
+  --text-dim:  #94a3b8;
+  --sidebar-w: 340px;
+}
+html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; }
+
+#app { display: flex; height: 100vh; overflow: hidden; }
+
+/* ── Sidebar ── */
+#sidebar {
+  width: var(--sidebar-w); min-width: var(--sidebar-w);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  background: var(--surface); overflow: hidden;
+}
+#sidebar-header { padding: 14px 16px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+#sidebar-header h1 { font-size: 15px; font-weight: 600; }
+#sidebar-header .sub { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+#health-bar {
+  display: flex; gap: 10px; padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px; color: var(--text-dim); flex-shrink: 0; flex-wrap: wrap;
+}
+#health-bar span { display: flex; align-items: center; gap: 4px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.dot-green  { background: var(--green); }
+.dot-yellow { background: var(--yellow); }
+.dot-red    { background: var(--red); }
+
+#controls {
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  display: flex; gap: 6px; align-items: center; flex-shrink: 0;
+}
+#controls input {
+  flex: 1; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 5px; padding: 5px 8px; color: var(--text); font-size: 12px; outline: none;
+}
+#controls input:focus { border-color: var(--accent); }
+#controls select {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 5px; padding: 5px 6px; color: var(--text); font-size: 12px; outline: none; cursor: pointer;
+}
+#auto-badge {
+  font-size: 10px; padding: 2px 7px; border-radius: 10px;
+  background: var(--green); color: #0f1117; font-weight: 700;
+  cursor: pointer; user-select: none; white-space: nowrap;
+}
+#auto-badge.paused { background: var(--gray); color: var(--text); }
+
+#traces-sidebar-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#trace-list { flex: 1; overflow-y: auto; }
+.trace-item {
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background .12s;
+  display: flex; gap: 10px; align-items: flex-start;
+}
+.trace-item:hover { background: var(--surface2); }
+.trace-item.active { background: var(--surface2); border-left: 3px solid var(--accent); padding-left: 11px; }
+.trace-icon { margin-top: 2px; flex-shrink: 0; }
+.trace-body { flex: 1; min-width: 0; }
+.trace-top { display: flex; align-items: center; gap: 6px; }
+.trace-preview { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.trace-dur { font-size: 11px; color: var(--text-dim); white-space: nowrap; flex-shrink: 0; }
+.trace-meta { font-size: 10px; color: var(--text-dim); margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+.badge {
+  display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  font-weight: 700; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+}
+.badge-ok   { background: rgba(52,211,153,.15);  color: var(--green); }
+.badge-err  { background: rgba(248,113,113,.15); color: var(--red); }
+.badge-rl   { background: rgba(251,191,36,.15);  color: var(--yellow); }
+.badge-cmd  { background: rgba(91,138,247,.15);  color: var(--accent); }
+.badge-run  { background: rgba(156,163,175,.1);  color: var(--gray); }
+.badge-cli  { background: rgba(91,138,247,.2);   color: var(--accent); }
+.badge-gw   { background: rgba(167,139,250,.2);  color: var(--purple); }
+.badge-fb   { background: rgba(251,146,60,.2);   color: var(--orange); }
+
+/* ── Main panel ── */
+#main { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 18px; }
+#empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-dim); }
+#empty-state svg { opacity: .25; }
+#empty-state p { font-size: 13px; }
+
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.panel-head { padding: 11px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+.panel-head h2 { font-size: 13px; font-weight: 600; }
+.panel-body { padding: 14px 16px; }
+
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.kv { display: flex; flex-direction: column; gap: 2px; }
+.kv .k { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; }
+.kv .v { font-size: 12px; font-weight: 500; color: var(--text); word-break: break-all; }
+
+/* ── Pipeline ── */
+#pipeline { display: flex; flex-direction: column; }
+.step-row { display: flex; align-items: stretch; }
+.step-connector { width: 32px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; padding-top: 16px; }
+.step-dot { width: 13px; height: 13px; border-radius: 50%; border: 2px solid; flex-shrink: 0; z-index: 1; }
+.step-line { flex: 1; width: 2px; background: var(--border); margin-top: 2px; }
+.step-row:last-child .step-line { display: none; }
+.dot-ok    { background: var(--green);  border-color: var(--green); }
+.dot-skip  { background: var(--gray);   border-color: var(--gray); }
+.dot-block { background: var(--yellow); border-color: var(--yellow); }
+.dot-error { background: var(--red);    border-color: var(--red); }
+
+.step-card {
+  flex: 1; margin: 4px 0 10px 0;
+  background: var(--surface); border: 1px solid var(--border);
+  border-left-width: 3px; border-radius: 7px; overflow: hidden;
+}
+.step-card.s-ok    { border-left-color: var(--green); }
+.step-card.s-skip  { border-left-color: var(--gray); }
+.step-card.s-block { border-left-color: var(--yellow); }
+.step-card.s-error { border-left-color: var(--red); }
+
+.step-head { padding: 9px 14px; display: flex; align-items: center; gap: 10px; background: var(--surface2); }
+.step-name { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+.step-dur  { margin-left: auto; font-size: 11px; color: var(--text-dim); font-family: 'Consolas','Courier New',monospace; }
+
+.step-bar-wrap { height: 3px; background: var(--border); }
+.step-bar { height: 3px; }
+.bar-ok    { background: var(--green); }
+.bar-skip  { background: var(--gray); }
+.bar-block { background: var(--yellow); }
+.bar-error { background: var(--red); }
+
+/* Step body */
+.step-body { padding: 10px 14px 12px; display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+.step-stats { display: flex; flex-direction: column; gap: 7px; min-width: 160px; flex-shrink: 0; }
+.step-stat  { display: flex; flex-direction: column; gap: 1px; }
+.step-stat .sk { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; }
+.step-stat .sv { font-size: 12px; color: var(--text); word-break: break-all; font-family: 'Consolas','Courier New',monospace; }
+.sv-true  { color: var(--green) !important; }
+.sv-false { color: var(--gray)  !important; }
+.sv-null  { color: var(--gray)  !important; font-style: italic; }
+
+.step-content { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 10px; }
+.content-block { display: flex; flex-direction: column; gap: 4px; }
+.content-block .cb-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; }
+.content-block pre {
+  background: #0a0c14; border: 1px solid var(--border); border-radius: 4px;
+  padding: 8px 10px; font-size: 11px; font-family: 'Consolas','Courier New',monospace;
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 180px; overflow-y: auto; line-height: 1.55;
+}
+.pre-req     { color: #94c6f7; }
+.pre-resp    { color: #a8d8a8; }
+.pre-mem     { color: #c9b6f7; }
+.pre-tags    { color: #fcd68a; }
+.pre-default { color: var(--text-dim); }
+
+/* Rate limit bar */
+.rl-bar-wrap  { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+.rl-bar-track { flex: 1; height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; border: 1px solid var(--border); }
+.rl-bar-fill  { height: 100%; border-radius: 3px; transition: width .3s; }
+.rl-label     { font-size: 11px; color: var(--text-dim); white-space: nowrap; font-family: 'Consolas','Courier New',monospace; }
+
+/* Waterfall */
+.wf-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+.wf-row:last-child { border-bottom: none; }
+.wf-name  { width: 130px; flex-shrink: 0; font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+.wf-track { flex: 1; position: relative; height: 14px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+.wf-bar   { position: absolute; height: 100%; border-radius: 3px; min-width: 2px; opacity: .85; }
+.wf-dur   { width: 52px; text-align: right; font-size: 11px; color: var(--text-dim); font-family: 'Consolas','Courier New',monospace; flex-shrink: 0; }
+
+/* ── History modal ── */
+#modal-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.65); z-index: 100;
+  align-items: center; justify-content: center;
+}
+#modal-overlay.open { display: flex; }
+#modal {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  width: min(720px, 92vw); max-height: 80vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,.6);
+}
+#modal-head {
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+}
+#modal-head h3 { font-size: 14px; font-weight: 600; flex: 1; }
+#modal-close {
+  background: none; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: 20px; line-height: 1; padding: 0 4px;
+}
+#modal-close:hover { color: var(--text); }
+#modal-body { overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+
+.hist-msg {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.hist-msg-head {
+  display: flex; align-items: center; gap: 8px;
+}
+.hist-role-user { background: rgba(91,138,247,.2); color: var(--accent); }
+.hist-role-assistant { background: rgba(52,211,153,.15); color: var(--green); }
+.hist-index { font-size: 10px; color: var(--text-dim); font-family: 'Consolas','Courier New',monospace; }
+.hist-msg pre {
+  background: #0a0c14; border: 1px solid var(--border); border-radius: 4px;
+  padding: 8px 10px; font-size: 11px; font-family: 'Consolas','Courier New',monospace;
+  white-space: pre-wrap; word-break: break-all; line-height: 1.55;
+  max-height: 200px; overflow-y: auto;
+}
+.hist-msg.role-user pre      { color: #94c6f7; }
+.hist-msg.role-assistant pre { color: #a8d8a8; }
+.hist-truncated { font-size: 10px; color: var(--text-dim); font-style: italic; text-align: right; margin-top: 2px; }
+
+.hist-len-link {
+  color: var(--accent); text-decoration: underline dotted;
+  cursor: pointer; font-family: 'Consolas','Courier New',monospace;
+  font-size: 12px;
+}
+.hist-len-link:hover { color: #fff; }
+
+/* ── Tab nav ── */
+#tab-nav {
+  display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.tab-btn {
+  flex: 1; padding: 9px 0; font-size: 12px; font-weight: 600;
+  background: none; border: none; color: var(--text-dim);
+  cursor: pointer; letter-spacing: .03em;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color .12s, border-color .12s;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Dreaming sidebar */
+#dream-sidebar-body { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 12px; }
+.dream-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.dream-stat {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 3px;
+}
+.dream-stat .ds-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; }
+.dream-stat .ds-value { font-size: 20px; font-weight: 700; font-family: 'Consolas','Courier New',monospace; }
+.ds-green  { color: var(--green); }
+.ds-yellow { color: var(--yellow); }
+.ds-red    { color: var(--red); }
+.ds-purple { color: var(--purple); }
+.ds-gray   { color: var(--gray); }
+.ds-accent { color: var(--accent); }
+
+/* Dreaming main panel */
+#dream-main { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 18px; }
+
+/* Skills list */
+.skill-row {
+  padding: 11px 14px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: flex-start; gap: 10px;
+}
+.skill-row:last-child { border-bottom: none; }
+.skill-info { flex: 1; min-width: 0; }
+.skill-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.skill-path { font-size: 10px; color: var(--text-dim); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.skill-wf   { font-size: 11px; color: var(--text-dim); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.skill-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex-shrink: 0; }
+.conf-bar   { width: 64px; height: 5px; background: var(--surface2); border-radius: 3px; overflow: hidden; border: 1px solid var(--border); }
+.conf-fill  { height: 100%; border-radius: 3px; }
+.skill-ts   { font-size: 10px; color: var(--text-dim); font-family: 'Consolas','Courier New',monospace; white-space: nowrap; }
+
+/* badge-pending / badge-auto */
+.badge-pending  { background: rgba(251,191,36,.15); color: var(--yellow); }
+.badge-approved { background: rgba(52,211,153,.15);  color: var(--green); }
+.badge-autokept { background: rgba(167,139,250,.2);  color: var(--purple); }
+.badge-rejected { background: rgba(248,113,113,.15); color: var(--red); }
+
+/* Candidates table */
+.cand-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cand-table th { text-align: left; font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; padding: 6px 10px; border-bottom: 1px solid var(--border); font-weight: 600; }
+.cand-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.cand-table tr:last-child td { border-bottom: none; }
+.cand-table tr:hover td { background: var(--surface2); }
+.cand-uid { font-family: 'Consolas','Courier New',monospace; font-size: 10px; color: var(--text-dim); }
+.cand-tool { font-family: 'Consolas','Courier New',monospace; }
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+@media (max-width: 700px) {
+  :root { --sidebar-w: 100vw; }
+  #app { flex-direction: column; }
+  #sidebar { width: 100%; min-width: 0; max-height: 40vh; border-right: none; border-bottom: 1px solid var(--border); }
+  #main { padding: 12px; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div id="sidebar-header">
+      <h1>ClaudeBot</h1>
+      <div class="sub">Operations dashboard</div>
+    </div>
+    <div id="tab-nav">
+      <button class="tab-btn active" data-tab="traces">Traces</button>
+      <button class="tab-btn" data-tab="dreaming">Dreaming</button>
+    </div>
+
+    <!-- Traces sidebar content -->
+    <div id="traces-sidebar-body" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+      <div id="health-bar">
+        <span><span class="dot dot-green" id="h-dot"></span><span id="h-label">–</span></span>
+        <span>⬆ <span id="h-uptime">–</span></span>
+        <span>5m: <span id="h-rate">–</span> req</span>
+        <span>err: <span id="h-err">–</span></span>
+      </div>
+      <div id="controls">
+        <input id="search" type="search" placeholder="Filter…" />
+        <select id="filter-status">
+          <option value="">All</option>
+          <option value="ok">OK</option>
+          <option value="error">Error</option>
+          <option value="rate_limited">Rate limited</option>
+          <option value="command">Command</option>
+          <option value="running">Running</option>
+        </select>
+        <span id="auto-badge">LIVE</span>
+      </div>
+      <div id="trace-list"></div>
+    </div>
+
+    <!-- Dreaming sidebar content -->
+    <div id="dream-sidebar-body" style="display:none">
+      <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600;padding-bottom:4px;">Skills Generated</div>
+      <div class="dream-stat-grid">
+        <div class="dream-stat"><span class="ds-label">Total</span><span class="ds-value ds-accent" id="ds-total">–</span></div>
+        <div class="dream-stat"><span class="ds-label">Pending</span><span class="ds-value ds-yellow" id="ds-pending">–</span></div>
+        <div class="dream-stat"><span class="ds-label">Approved</span><span class="ds-value ds-green" id="ds-approved">–</span></div>
+        <div class="dream-stat"><span class="ds-label">Auto-kept</span><span class="ds-value ds-purple" id="ds-autokept">–</span></div>
+        <div class="dream-stat"><span class="ds-label">Rejected</span><span class="ds-value ds-red" id="ds-rejected">–</span></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600;padding:8px 0 4px;">Thread Queue</div>
+      <div class="dream-stat-grid">
+        <div class="dream-stat"><span class="ds-label">Ready Now</span><span class="ds-value ds-green" id="ds-ready">–</span></div>
+        <div class="dream-stat"><span class="ds-label">Waiting Idle</span><span class="ds-value ds-yellow" id="ds-waiting">–</span></div>
+        <div class="dream-stat" style="grid-column:1/-1"><span class="ds-label">Dreamed (done)</span><span class="ds-value ds-gray" id="ds-dreamed">–</span></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.6;">
+        Runs hourly at <code style="color:var(--accent)">:30</code>. Needs
+        <code style="color:var(--accent)">tool_use &gt; 5</code> +
+        <code style="color:var(--accent)">idle &gt; 2h</code>.
+      </div>
+    </div>
+  </aside>
+
+  <!-- Traces main panel -->
+  <main id="main">
+    <div id="empty-state">
+      <svg width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+      </svg>
+      <p>Select a request to inspect its pipeline</p>
+    </div>
+    <div id="detail" style="display:none;flex-direction:column;gap:16px;"></div>
+  </main>
+
+  <!-- Dreaming main panel -->
+  <main id="dream-main" style="display:none">
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+        </svg>
+        <h2>Skills Generated</h2>
+        <span id="dream-refresh-badge" style="margin-left:auto;font-size:10px;padding:2px 7px;border-radius:10px;background:var(--green);color:#0f1117;font-weight:700;cursor:pointer;user-select:none">LIVE</span>
+      </div>
+      <div id="skills-list" style="max-height:420px;overflow-y:auto;">
+        <div style="padding:20px;text-align:center;color:var(--text-dim);font-size:12px;">Loading…</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <h2>Thread Candidates</h2>
+        <span style="margin-left:auto;font-size:11px;color:var(--text-dim)">dreamed=0 shown first</span>
+      </div>
+      <div style="overflow-x:auto;">
+        <table class="cand-table" id="cand-table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Tool Uses</th>
+              <th>Last Active</th>
+              <th>State</th>
+            </tr>
+          </thead>
+          <tbody id="cand-tbody">
+            <tr><td colspan="4" style="color:var(--text-dim);text-align:center;padding:20px;">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ── History modal ── -->
+<div id="modal-overlay">
+  <div id="modal">
+    <div id="modal-head">
+      <h3 id="modal-title">Message History</h3>
+      <button id="modal-close" title="Close">×</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+const token = new URLSearchParams(location.search).get('token') ?? '';
+
+const STEP_ORDER = ['identity','command_check','rate_limit','context_fetch','ai_call','tag_extraction','delivery','memory_persist'];
+const STEP_LABEL = {
+  identity:       'Identity',
+  command_check:  'Command Check',
+  rate_limit:     'Rate Limit',
+  context_fetch:  'Context Fetch',
+  ai_call:        'AI Call',
+  tag_extraction: 'Tag Extraction',
+  delivery:       'Delivery',
+  memory_persist: 'Memory Persist',
+};
+
+let traces = [], selectedId = null, autoRefresh = true, pollTimer = null;
+
+// History cache: avoids embedding raw JSON in HTML attributes
+const _historyCache = [];
+
+const listEl    = document.getElementById('trace-list');
+const detailEl  = document.getElementById('detail');
+const emptyEl   = document.getElementById('empty-state');
+const searchEl  = document.getElementById('search');
+const filterEl  = document.getElementById('filter-status');
+const autoBadge = document.getElementById('auto-badge');
+
+/* ── API ── */
+async function apiFetch(path) {
+  const sep = path.includes('?') ? '&' : '?';
+  const r = await fetch(path + (token ? sep + 'token=' + encodeURIComponent(token) : ''));
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+/* ── Formatters ── */
+function dur(ms) {
+  if (ms == null) return '–';
+  if (ms < 1000) return ms + 'ms';
+  return (ms / 1000).toFixed(1) + 's';
+}
+function ts(ms) {
+  if (!ms) return '–';
+  return new Date(ms).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+function uptimeFmt(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`;
+}
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function statusBadge(st) {
+  const map = { ok:'badge-ok', error:'badge-err', rate_limited:'badge-rl', command:'badge-cmd', running:'badge-run' };
+  return `<span class="badge ${map[st] ?? 'badge-run'}">${esc(st ?? 'running')}</span>`;
+}
+function stepCardCls(st) {
+  return { ok:'s-ok', skip:'s-skip', block:'s-block', error:'s-error' }[st] ?? 's-skip';
+}
+function dotCls(st) {
+  return { ok:'dot-ok', skip:'dot-skip', block:'dot-block', error:'dot-error' }[st] ?? 'dot-skip';
+}
+function barCls(st) {
+  return { ok:'bar-ok', skip:'bar-skip', block:'bar-block', error:'bar-error' }[st] ?? 'bar-skip';
+}
+function stepBadgeCls(st) {
+  return { ok:'badge-ok', error:'badge-err', block:'badge-rl', skip:'badge-run' }[st] ?? 'badge-run';
+}
+
+/* ── Helpers ── */
+function stat(label, value, extraCls) {
+  let display = value;
+  let cls = extraCls ?? '';
+  if (value === null || value === undefined) { display = 'null'; cls = 'sv-null'; }
+  else if (value === true  || value === 'true')  { display = 'true';  cls = cls || 'sv-true'; }
+  else if (value === false || value === 'false') { display = 'false'; cls = cls || 'sv-false'; }
+  return `<div class="step-stat">
+    <span class="sk">${esc(label)}</span>
+    <span class="sv ${cls}">${esc(String(display))}</span>
+  </div>`;
+}
+
+function contentBlock(label, text, cls) {
+  if (text === null || text === undefined || text === '' || text === 'null') return '';
+  return `<div class="content-block">
+    <span class="cb-label">${esc(label)}</span>
+    <pre class="${cls ?? 'pre-default'}">${esc(String(text))}</pre>
+  </div>`;
+}
+
+/* ── Step-specific body rendering ── */
+function renderStepBody(name, meta) {
+  if (!meta) return '';
+  const m = meta;
+
+  switch (name) {
+
+    case 'identity':
+      return `<div class="step-body">
+        <div class="step-stats">
+          ${stat('User ID',     m.userId)}
+          ${stat('Platform ID', m.platformId)}
+          ${stat('Platform',    m.platform)}
+        </div>
+      </div>`;
+
+    case 'command_check': {
+      const handled = m.handled === true || m.handled === 'true';
+      return `<div class="step-body">
+        <div class="step-stats">
+          ${stat('Handled', m.handled)}
+        </div>
+        <div class="step-content">
+          ${handled && m.cmd
+            ? contentBlock('Command Text', m.cmd, 'pre-tags')
+            : `<div style="color:var(--text-dim);font-size:12px;padding-top:4px;">Passed to AI pipeline →</div>`}
+        </div>
+      </div>`;
+    }
+
+    case 'rate_limit': {
+      const used = Number(m.used ?? 0);
+      const max  = Number(m.max  ?? 1);
+      const pct  = Math.min(used / max * 100, 100);
+      const fillColor = pct >= 90 ? 'var(--red)' : pct >= 60 ? 'var(--yellow)' : 'var(--green)';
+      return `<div class="step-body">
+        <div class="step-stats">
+          ${stat('Allowed',   m.allowed)}
+          ${stat('Reason',    m.reason)}
+          ${m.owner ? stat('Owner', 'exempt', 'sv-true') : ''}
+          <div class="step-stat">
+            <span class="sk">Usage (${used}/${max})</span>
+            <div class="rl-bar-wrap">
+              <div class="rl-bar-track">
+                <div class="rl-bar-fill" style="width:${pct}%;background:${fillColor}"></div>
+              </div>
+              <span class="rl-label">${Math.round(pct)}%</span>
+            </div>
+          </div>
+          ${stat('Window',     m.windowSec != null ? m.windowSec + 's' : null)}
+          ${m.retryAfterMs != null && m.retryAfterMs !== 'null'
+            ? stat('Retry After', Math.ceil(Number(m.retryAfterMs) / 1000) + 's')
+            : ''}
+        </div>
+      </div>`;
+    }
+
+    case 'context_fetch': {
+      const histCount = m.historyLen ?? 0;
+      const hasHistory = histCount > 0 && Array.isArray(m.history) && m.history.length > 0;
+      let histLink;
+      if (hasHistory) {
+        // Reuse existing cache slot for same trace (keyed by content length to avoid duplicates)
+        const key = String(histCount) + ':' + (m.history[0]?.content ?? '').slice(0, 20);
+        let cacheIdx = _historyCache.findIndex((e) => e._key === key);
+        if (cacheIdx === -1) {
+          if (_historyCache.length > 400) _historyCache.splice(0, 200); // evict oldest
+          cacheIdx = _historyCache.length;
+          const entry = [...m.history];
+          entry._key = key;
+          _historyCache.push(entry);
+        }
+        histLink = `<span class="hist-len-link" data-hidx="${cacheIdx}" data-count="${histCount}">${histCount}</span>`;
+      } else {
+        histLink = `<span style="font-family:'Consolas','Courier New',monospace;font-size:12px">${histCount}</span>`;
+      }
+      return `<div class="step-body">
+        <div class="step-stats">
+          <div class="step-stat">
+            <span class="sk">History Msgs</span>
+            <span class="sv">${histLink}</span>
+          </div>
+          ${stat('Has Summary',    m.hasSummary)}
+          ${stat('Learnings',      m.learningsCount)}
+          ${stat('Pins',           m.pinsCount)}
+          ${stat('Timezone',       m.timezone)}
+          ${m.pinKeys ? stat('Pin Keys', m.pinKeys) : ''}
+        </div>
+        <div class="step-content">
+          ${contentBlock('Memory Summary', m.summarySnippet,  'pre-mem')}
+          ${contentBlock('Learnings',      m.learningsList,   'pre-mem')}
+        </div>
+      </div>`;
+    }
+
+    case 'ai_call': {
+      const provBadge = {
+        'cli':              '<span class="badge badge-cli">CLI</span>',
+        'gateway':          '<span class="badge badge-gw">Gateway</span>',
+        'gateway-fallback': '<span class="badge badge-fb">Fallback</span>',
+      }[m.provider] ?? `<span class="badge badge-run">${esc(m.provider ?? '?')}</span>`;
+      return `<div class="step-body" style="flex-direction:column;gap:12px;">
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
+          <div class="step-stats">
+            <div class="step-stat"><span class="sk">Provider</span><span class="sv">${provBadge}</span></div>
+            ${stat('Response Len', m.responseLen != null ? m.responseLen + ' chars' : null)}
+            ${stat('Tool Uses',    m.toolUseCount)}
+            ${m.sessionId && m.sessionId !== 'null' ? stat('Session', m.sessionId.toString().slice(0, 18) + '…') : ''}
+          </div>
+        </div>
+        <div class="step-content" style="min-width:0;width:100%">
+          ${contentBlock('Request',  m.request,  'pre-req')}
+          ${contentBlock('Response', m.response, 'pre-resp')}
+        </div>
+      </div>`;
+    }
+
+    case 'tag_extraction':
+      return `<div class="step-body">
+        <div class="step-stats">
+          ${stat('Reactions',  m.reactionsCount ?? 0)}
+          ${stat('Files',      m.filesCount     ?? 0)}
+          ${stat('Reminders',  m.remindersCount ?? 0)}
+        </div>
+        <div class="step-content">
+          ${contentBlock('Reaction Emojis', m.reactions,  'pre-tags')}
+          ${contentBlock('File Paths',      m.files,      'pre-tags')}
+          ${contentBlock('Reminders',       m.reminders,  'pre-tags')}
+        </div>
+      </div>`;
+
+    case 'delivery':
+      return `<div class="step-body">
+        <div class="step-stats">
+          ${stat('Response Chars',    m.chars)}
+          ${stat('File Attachments',  m.filesCount     ?? m.files)}
+          ${stat('Reactions Sent',    m.reactionsCount ?? m.reactions)}
+          ${m.fallback ? stat('Fallback', true) : ''}
+        </div>
+      </div>`;
+
+    case 'memory_persist':
+      return `<div class="step-body">
+        <div class="step-stats">
+          ${stat('History After', m.historyLenAfter)}
+          ${stat('User Msg Len',  m.userMsgLen)}
+          ${stat('Bot Msg Len',   m.assistantMsgLen)}
+          ${stat('Tool Uses',     m.toolUseCount)}
+        </div>
+      </div>`;
+
+    default: {
+      const entries = Object.entries(m);
+      if (!entries.length) return '';
+      const shorts = entries.filter(([, v]) => String(v ?? '').length <= 80);
+      const longs  = entries.filter(([, v]) => String(v ?? '').length  > 80);
+      return `<div class="step-body">
+        ${shorts.length ? `<div class="step-stats">${shorts.map(([k, v]) => stat(k, v)).join('')}</div>` : ''}
+        ${longs.length  ? `<div class="step-content">${longs.map(([k, v]) => contentBlock(k, v, 'pre-default')).join('')}</div>` : ''}
+      </div>`;
+    }
+  }
+}
+
+/* ── Trace list ── */
+function filteredTraces() {
+  const q  = searchEl.value.trim().toLowerCase();
+  const st = filterEl.value;
+  return traces.filter((t) => {
+    if (st && t.status !== st) return false;
+    if (q && !t.preview?.toLowerCase().includes(q) && !(t.userId ?? '').includes(q)) return false;
+    return true;
+  });
+}
+
+function renderList() {
+  const items = filteredTraces();
+  if (!items.length) {
+    listEl.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:12px;">No traces match the filter</div>';
+    return;
+  }
+  listEl.innerHTML = items.map((t) => {
+    const active  = t.id === selectedId ? ' active' : '';
+    const color   = { ok:'var(--green)', error:'var(--red)', rate_limited:'var(--yellow)', command:'var(--accent)' }[t.status] ?? 'var(--gray)';
+    const durStr  = t.durationMs ? dur(t.durationMs) : t.status === 'running' ? '…' : '–';
+    return `<div class="trace-item${active}" data-id="${t.id}">
+      <div class="trace-icon">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="${color}"><circle cx="5" cy="5" r="5"/></svg>
+      </div>
+      <div class="trace-body">
+        <div class="trace-top">
+          <span class="trace-preview">${esc(t.preview || '(empty)')}</span>
+          <span class="trace-dur">${durStr}</span>
+        </div>
+        <div class="trace-meta">
+          <span>${esc(t.platform)}</span>
+          <span>${ts(t.startedAt)}</span>
+          ${statusBadge(t.status)}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  listEl.querySelectorAll('.trace-item').forEach((el) => {
+    el.addEventListener('click', () => selectTrace(el.dataset.id));
+  });
+}
+
+/* ── Detail panel ── */
+function selectTrace(id) {
+  selectedId = id;
+  renderList();
+  const t = traces.find((x) => x.id === id);
+  if (t) renderDetail(t);
+}
+
+function renderDetail(t) {
+  emptyEl.style.display = 'none';
+  detailEl.style.display = 'flex';
+
+  const maxDurVal = Math.max(...(t.steps || []).map((s) => s.durationMs ?? 0), 1);
+  const stepMap = {};
+  (t.steps || []).forEach((s) => { stepMap[s.name] = s; });
+
+  const pipeHTML = STEP_ORDER.map((name) => {
+    const s = stepMap[name];
+    if (!s) {
+      return `<div class="step-row">
+        <div class="step-connector">
+          <div class="step-dot" style="background:var(--border);border-color:var(--border);opacity:.35"></div>
+          <div class="step-line"></div>
+        </div>
+        <div class="step-card" style="opacity:.28;border-left-color:var(--border)">
+          <div class="step-head">
+            <span class="step-name">${esc(STEP_LABEL[name] ?? name)}</span>
+            <span class="badge badge-run" style="margin-left:auto">${t.status === 'running' ? 'pending' : 'skipped'}</span>
+            <span class="step-dur">–</span>
+          </div>
+          <div class="step-bar-wrap"><div class="step-bar" style="width:0"></div></div>
+        </div>
+      </div>`;
+    }
+
+    const pct = Math.round((s.durationMs ?? 0) / maxDurVal * 100);
+    return `<div class="step-row">
+      <div class="step-connector">
+        <div class="step-dot ${dotCls(s.status)}"></div>
+        <div class="step-line"></div>
+      </div>
+      <div class="step-card ${stepCardCls(s.status)}">
+        <div class="step-head">
+          <span class="step-name">${esc(STEP_LABEL[name] ?? name)}</span>
+          <span class="badge ${stepBadgeCls(s.status)}">${esc(s.status)}</span>
+          <span class="step-dur">${dur(s.durationMs)}</span>
+        </div>
+        <div class="step-bar-wrap">
+          <div class="step-bar ${barCls(s.status)}" style="width:${pct}%"></div>
+        </div>
+        ${renderStepBody(name, s.meta)}
+      </div>
+    </div>`;
+  }).join('');
+
+  detailEl.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">${statusBadge(t.status)}<h2>${esc(t.preview || '(empty)')}</h2></div>
+      <div class="panel-body">
+        <div class="summary-grid">
+          <div class="kv"><span class="k">Trace ID</span><span class="v" style="font-size:10px;color:var(--text-dim)">${esc(t.id)}</span></div>
+          <div class="kv"><span class="k">Platform</span><span class="v">${esc(t.platform)}</span></div>
+          <div class="kv"><span class="k">User</span><span class="v" style="font-size:10px">${esc(t.userId)}</span></div>
+          <div class="kv"><span class="k">Started</span><span class="v">${ts(t.startedAt)}</span></div>
+          <div class="kv"><span class="k">Duration</span><span class="v">${dur(t.durationMs)}</span></div>
+          <div class="kv"><span class="k">Steps</span><span class="v">${t.steps?.length ?? 0}/${STEP_ORDER.length}</span></div>
+          ${t.error ? `<div class="kv" style="grid-column:1/-1"><span class="k">Error</span><span class="v" style="color:var(--red)">${esc(t.error)}</span></div>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+        <h2>Pipeline</h2>
+        <span style="margin-left:auto;font-size:11px;color:var(--text-dim)">${dur(t.durationMs)} total · ${t.steps?.length ?? 0} steps</span>
+      </div>
+      <div class="panel-body" style="padding:12px 12px 4px">
+        <div id="pipeline">${pipeHTML}</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <path stroke-linecap="round" d="M3 9h18M3 15h18M9 3v18"/>
+        </svg>
+        <h2>Waterfall</h2>
+      </div>
+      <div class="panel-body">${renderWaterfall(t)}</div>
+    </div>
+  `;
+}
+
+function renderWaterfall(t) {
+  if (!t.steps?.length) return '<div style="color:var(--text-dim);font-size:12px;">No steps recorded yet.</div>';
+  const total = t.durationMs || 1;
+  return STEP_ORDER.map((name) => {
+    const s = t.steps.find((x) => x.name === name);
+    if (!s) return null;
+    const idx    = t.steps.indexOf(s);
+    const offset = t.steps.slice(0, idx).reduce((a, x) => a + (x.durationMs ?? 0), 0);
+    const pctL   = Math.min(offset / total * 100, 100);
+    const pctW   = Math.min((s.durationMs ?? 0) / total * 100, 100 - pctL);
+    const color  = { ok:'var(--green)', skip:'var(--gray)', block:'var(--yellow)', error:'var(--red)' }[s.status] ?? 'var(--gray)';
+    return `<div class="wf-row">
+      <span class="wf-name">${esc(STEP_LABEL[name] ?? name)}</span>
+      <div class="wf-track">
+        <div class="wf-bar" style="left:${pctL}%;width:${Math.max(pctW, 0.5)}%;background:${color}"></div>
+      </div>
+      <span class="wf-dur">${dur(s.durationMs)}</span>
+    </div>`;
+  }).filter(Boolean).join('');
+}
+
+/* ── Health ── */
+async function pollHealth() {
+  try {
+    const h = await apiFetch('/api/health');
+    if (!h) return;
+    document.getElementById('h-dot').className    = 'dot ' + (h.status === 'ok' ? 'dot-green' : 'dot-red');
+    document.getElementById('h-label').textContent  = h.status === 'ok' ? 'healthy' : 'error';
+    document.getElementById('h-uptime').textContent = uptimeFmt(h.uptime);
+    document.getElementById('h-rate').textContent   = h.recent5min;
+    document.getElementById('h-err').textContent    = h.errors;
+  } catch {}
+}
+
+/* ── Poll ── */
+async function poll() {
+  try {
+    traces = await apiFetch('/api/traces?limit=80');
+    renderList();
+    if (!selectedId && traces.length) {
+      selectTrace(traces[0].id);
+    } else if (selectedId) {
+      const updated = traces.find((t) => t.id === selectedId);
+      if (updated) renderDetail(updated);
+    }
+  } catch (e) { console.warn('poll error', e); }
+}
+
+/* ── History modal ── */
+const modalOverlay = document.getElementById('modal-overlay');
+const modalBody    = document.getElementById('modal-body');
+const modalTitle   = document.getElementById('modal-title');
+document.getElementById('modal-close').addEventListener('click', closeModal);
+modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) closeModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+function openHistoryModal(history, count) {
+  modalTitle.textContent = `Message History — ${count} message${count !== 1 ? 's' : ''}`;
+  modalBody.innerHTML = history.map((msg, i) => {
+    const isUser = msg.role === 'user';
+    const roleLabel = isUser ? 'User' : 'Bot';
+    const roleCls   = isUser ? 'hist-role-user' : 'hist-role-assistant';
+    return `<div class="hist-msg role-${msg.role}">
+      <div class="hist-msg-head">
+        <span class="badge ${roleCls}">${roleLabel}</span>
+        <span class="hist-index">#${i + 1}</span>
+      </div>
+      <pre>${esc(msg.content ?? '')}</pre>
+    </div>`;
+  }).join('') || '<div style="color:var(--text-dim);font-size:12px;">No messages in history.</div>';
+  modalOverlay.classList.add('open');
+}
+
+function closeModal() {
+  modalOverlay.classList.remove('open');
+}
+
+// Delegate click on any hist-len-link (rendered dynamically)
+document.getElementById('detail').addEventListener('click', (e) => {
+  const link = e.target.closest('.hist-len-link');
+  if (!link) return;
+  const idx     = parseInt(link.dataset.hidx, 10);
+  const count   = parseInt(link.dataset.count, 10);
+  const history = _historyCache[idx];
+  if (history) openHistoryModal(history, count);
+});
+
+autoBadge.addEventListener('click', () => {
+  autoRefresh = !autoRefresh;
+  autoBadge.textContent = autoRefresh ? 'LIVE' : 'PAUSED';
+  autoBadge.classList.toggle('paused', !autoRefresh);
+  if (autoRefresh) pollTimer = setInterval(poll, 2000);
+  else clearInterval(pollTimer);
+});
+searchEl.addEventListener('input', renderList);
+filterEl.addEventListener('change', renderList);
+
+/* ── Tab switching ── */
+let activeTab = 'traces';
+let dreamRefreshAuto = true;
+let dreamTimer = null;
+
+document.querySelectorAll('.tab-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    activeTab = btn.dataset.tab;
+    document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b === btn));
+
+    const onTraces  = activeTab === 'traces';
+    const onDreaming = activeTab === 'dreaming';
+
+    // Sidebar content
+    document.getElementById('traces-sidebar-body').style.display = onTraces ? 'flex' : 'none';
+    document.getElementById('dream-sidebar-body').style.display  = onDreaming ? 'flex' : 'none';
+    if (onDreaming) document.getElementById('dream-sidebar-body').style.flexDirection = 'column';
+
+    // Main panel
+    document.getElementById('main').style.display       = onTraces ? 'flex' : 'none';
+    document.getElementById('dream-main').style.display = onDreaming ? 'flex' : 'none';
+
+    if (onDreaming) {
+      pollDreaming();
+      if (dreamRefreshAuto) dreamTimer = setInterval(pollDreaming, 5000);
+    } else {
+      clearInterval(dreamTimer);
+    }
+  });
+});
+
+/* ── Dreaming API ── */
+async function pollDreaming() {
+  try {
+    const data = await apiFetch('/api/dreaming');
+    renderDreamingSidebar(data.stats);
+    renderSkillsList(data.skills);
+    renderCandidates(data.candidates);
+  } catch (e) { console.warn('dreaming poll error', e); }
+}
+
+function renderDreamingSidebar(s) {
+  document.getElementById('ds-total').textContent    = s.total;
+  document.getElementById('ds-pending').textContent  = s.pending;
+  document.getElementById('ds-approved').textContent = s.approved;
+  document.getElementById('ds-autokept').textContent = s.autoKept;
+  document.getElementById('ds-rejected').textContent = s.rejected;
+  document.getElementById('ds-ready').textContent    = s.readyNow;
+  document.getElementById('ds-waiting').textContent  = s.waitingIdle;
+  document.getElementById('ds-dreamed').textContent  = s.dreamed;
+}
+
+function skillStatusBadge(status) {
+  const map = {
+    pending:   'badge-pending',
+    approved:  'badge-approved',
+    'auto-kept': 'badge-autokept',
+    rejected:  'badge-rejected',
+  };
+  return `<span class="badge ${map[status] ?? 'badge-run'}">${esc(status)}</span>`;
+}
+
+function renderSkillsList(skills) {
+  const el = document.getElementById('skills-list');
+  if (!skills.length) {
+    el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:12px;">No skills generated yet. Dreaming runs hourly after conversations with 5+ tool uses idle for 2h.</div>';
+    return;
+  }
+  el.innerHTML = skills.map((s) => {
+    const conf = Math.round((s.confidence_score ?? 0) * 100);
+    const confColor = conf >= 70 ? 'var(--green)' : conf >= 40 ? 'var(--yellow)' : 'var(--red)';
+    // Extract skill name from path: last dir component before SKILL.md
+    const nameParts = (s.skill_path ?? '').replace(/\\/g, '/').split('/');
+    const skillDirName = nameParts[nameParts.length - 2] ?? s.id;
+    const relPath = nameParts.slice(-3).join('/');
+    return `<div class="skill-row">
+      <div class="skill-info">
+        <div class="skill-name">${esc(skillDirName)}</div>
+        <div class="skill-path" title="${esc(s.skill_path ?? '')}">${esc(relPath)}</div>
+        ${s.trigger_workflow ? `<div class="skill-wf">${esc(s.trigger_workflow)}</div>` : ''}
+      </div>
+      <div class="skill-meta">
+        ${skillStatusBadge(s.status)}
+        <div class="conf-bar" title="Confidence: ${conf}%">
+          <div class="conf-fill" style="width:${conf}%;background:${confColor}"></div>
+        </div>
+        <span class="skill-ts">${conf}%</span>
+        <span class="skill-ts">${s.tool_use_count ?? 0} tools</span>
+        <span class="skill-ts">${tsShort(s.created_at)}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderCandidates(candidates) {
+  const tbody = document.getElementById('cand-tbody');
+  if (!candidates.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-dim);text-align:center;padding:16px;">No threads yet.</td></tr>';
+    return;
+  }
+  // Sort: ready first, then waiting, then dreamed
+  const sorted = [...candidates].sort((a, b) => {
+    const rank = (c) => c.readyToDream ? 0 : c.waitingIdle ? 1 : c.needsMoreUse ? 2 : 3;
+    return rank(a) - rank(b);
+  });
+  tbody.innerHTML = sorted.map((c) => {
+    let stateBadge, stateTip;
+    if (c.dreamed) {
+      stateBadge = `<span class="badge badge-run">Dreamed</span>`;
+      stateTip = 'Already processed';
+    } else if (c.readyToDream) {
+      stateBadge = `<span class="badge badge-ok">Ready</span>`;
+      stateTip = 'Will be picked up next :30';
+    } else if (c.waitingIdle) {
+      stateBadge = `<span class="badge badge-rl">Waiting idle</span>`;
+      stateTip = 'Has enough tool uses but still active (needs 2h idle)';
+    } else {
+      stateBadge = `<span class="badge badge-run">Need more tool use</span>`;
+      stateTip = `${c.toolUseTotal}/5 tool uses`;
+    }
+    const idleMs  = c.lastActive ? Date.now() - c.lastActive : null;
+    const idleStr = idleMs != null ? durLong(idleMs) + ' ago' : '–';
+    return `<tr title="${esc(stateTip)}">
+      <td class="cand-uid">${esc((c.userId ?? '').slice(0, 8))}…</td>
+      <td class="cand-tool" style="color:${c.toolUseTotal > 5 ? 'var(--green)' : 'var(--text-dim)'}">${c.toolUseTotal}</td>
+      <td style="font-size:11px;color:var(--text-dim)">${idleStr}</td>
+      <td>${stateBadge}</td>
+    </tr>`;
+  }).join('');
+}
+
+function tsShort(ms) {
+  if (!ms) return '–';
+  const d = new Date(ms);
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+         d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function durLong(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60)   return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+
+document.getElementById('dream-refresh-badge').addEventListener('click', () => {
+  dreamRefreshAuto = !dreamRefreshAuto;
+  const badge = document.getElementById('dream-refresh-badge');
+  badge.textContent = dreamRefreshAuto ? 'LIVE' : 'PAUSED';
+  badge.style.background = dreamRefreshAuto ? 'var(--green)' : 'var(--gray)';
+  badge.style.color = dreamRefreshAuto ? '#0f1117' : 'var(--text)';
+  if (dreamRefreshAuto) dreamTimer = setInterval(pollDreaming, 5000);
+  else clearInterval(dreamTimer);
+});
+
+poll();
+pollHealth();
+pollTimer = setInterval(poll, 2000);
+setInterval(pollHealth, 10000);
+</script>
+</body>
+</html>

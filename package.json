@@ -5,9 +5,9 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "bash start.sh",
     "dev": "node --watch src/index.js",
-    "start:discord": "cross-env ADAPTERS=discord node src/index.js"
+    "start:discord": "cross-env ADAPTERS=discord bash start.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
