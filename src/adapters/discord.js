@@ -3,6 +3,8 @@ import { registerSlashCommands } from '../discord/register.js';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { isAudio, transcribeAudio } from '../media/transcribe.js';
+import { isImage, describeImage } from '../media/vision.js';
 import { spawn } from 'node:child_process';
 import { checkRateLimit, getRateLimitStatus, clearRateLimit, RATE_CONFIG } from '../core/rate-limiter.js';
 import { createTrace, recordStep, finalizeTrace } from '../trace/index.js';
@@ -78,14 +80,58 @@ async function downloadAttachment(attachment) {
 
 /**
  * Convert a collection of Discord attachments into text lines for the prompt.
- * Files are downloaded locally so the CLI can access them by path.
+ *
+ * - Audio files: transcribed via Whisper (if OPENAI_API_KEY set)
+ * - Image files: described via Claude Haiku vision (if ANTHROPIC_API_KEY set)
+ * - Other files: local path passed to the CLI as before
  */
 async function attachmentsToText(attachments) {
   const lines = [];
   for (const att of attachments.values()) {
+    const ct = att.contentType ?? '';
+
+    // ── Voice / audio ──────────────────────────────────────────────────────────
+    if (isAudio(ct, att.name)) {
+      const localPath = await downloadAttachment(att);
+      if (localPath) {
+        const transcript = await transcribeAudio(localPath, att.name);
+        if (transcript) {
+          lines.push(`[Voice message transcript: "${transcript}"]`);
+        } else {
+          // Whisper not configured — pass path so CLI can attempt its own handling
+          lines.push(
+            `[Voice message (audio file): ${localPath} — OPENAI_API_KEY not set, transcription unavailable]`
+          );
+        }
+      } else {
+        lines.push(`[Voice message: download failed — ${att.url}]`);
+      }
+      continue;
+    }
+
+    // ── Image ──────────────────────────────────────────────────────────────────
+    if (isImage(ct, att.name)) {
+      const localPath = await downloadAttachment(att);
+      if (localPath) {
+        const description = await describeImage(localPath, ct);
+        if (description) {
+          lines.push(`[Image description: ${description}]\n[Image file path: ${localPath}]`);
+        } else {
+          // Vision not configured — pass path; Claude CLI may still handle it
+          lines.push(
+            `[Image attached: ${localPath} (${att.name}, ${ct || 'unknown type'}) — ANTHROPIC_API_KEY not set, pre-analysis unavailable]`
+          );
+        }
+      } else {
+        lines.push(`[Image: download failed — ${att.url}]`);
+      }
+      continue;
+    }
+
+    // ── Other files (PDFs, code files, etc.) ──────────────────────────────────
     const localPath = await downloadAttachment(att);
     if (localPath) {
-      lines.push(`[Attached file saved locally: ${localPath} (original name: ${att.name}, type: ${att.contentType ?? 'unknown'})]`);
+      lines.push(`[Attached file saved locally: ${localPath} (original name: ${att.name}, type: ${ct || 'unknown'})]`);
     } else {
       lines.push(`[Attachment: ${att.name} — ${att.url}]`);
     }
@@ -1051,6 +1097,8 @@ function buildSystem(summary, learnings, timezone = 'UTC', pins = {}) {
     `The user's timezone is ${tzLabel}. When they say "tomorrow 9am" or "Friday at 3pm", interpret it in their timezone and convert to UTC for reminder tags. To set a reminder, include [REMINDER:timestamp:recur:message] in your response — timestamp must be ISO 8601 UTC. recur must be one of: none, hourly, daily, weekly, monthly. Examples: [REMINDER:2026-05-20T10:00:00Z:none:Call John] for a one-off, [REMINDER:2026-05-19T09:00:00Z:daily:Stand-up meeting] for daily. Only set reminders when the user explicitly asks. They can list with /reminders and cancel with /cancel-reminder <id>.`,
     `The user can receive a daily digest DM with upcoming reminders. To enable it, they use /set digest_time HH:MM (24h format, e.g. /set digest_time 08:30) along with /set timezone. If they ask to "send me a morning briefing" or similar, guide them to set these two preferences.`,
     `In Discord server channels, conversations automatically start in a new thread to keep channels clean. Users can disable this with /set auto_thread false. If a user asks to stop using threads, tell them to run that command.`,
+    `When the user sends a voice message, it is automatically transcribed and injected as [Voice message transcript: "..."]. Treat it exactly as if the user typed that text.`,
+    `When the user sends an image, it is automatically analysed and injected as [Image description: ...] followed by [Image file path: ...]. Use the description to answer questions about the image. If you need to inspect the raw file (e.g. to extract data), read it via the file path.`,
   ];
   const pinEntries = Object.entries(pins);
   if (pinEntries.length) {
