@@ -1,3 +1,4 @@
+import { spawnSync } from 'child_process';
 import { getDb } from '../memory/db.js';
 import { getThreshold } from './feedback.js';
 
@@ -6,6 +7,9 @@ const UNRESOLVED_THREAD_SILENCE_MS = 48 * 60 * 60 * 1000;
 const LONG_SILENCE_MS = 72 * 60 * 60 * 1000;
 const REPEATED_QUESTION_MIN = 3;
 const RECENT_MESSAGES_LIMIT = 30;
+const INTENT_CHECK_WINDOW_MS = 60 * 60 * 1000;   // max 1 Claude CLI call per user per hour
+const INTENT_MESSAGES_LIMIT = 20;                 // last N user messages fed to intent extractor
+const INTENT_LOOKBACK_MS = 3 * 24 * 60 * 60 * 1000; // only surface intents mentioned in last 3 days
 
 function getStopwords() {
   return new Set(['how', 'what', 'why', 'when', 'where', 'who', 'is', 'are', 'was', 'the', 'my', 'your', 'a', 'an', 'i', 'me', 'it', 'do', 'does', 'can', 'could', 'would', 'should', 'to', 'of', 'in', 'on', 'at', 'for', 'with', 'this', 'that', 'have', 'has', 'not', 'be', 'been']);
@@ -82,14 +86,83 @@ async function checkLongSilence(userId) {
   };
 }
 
+async function checkUnresolvedIntent(userId) {
+  const db = getDb();
+
+  // Per-user rate limit: at most one Claude CLI call per hour
+  const rlKey = `proactive_intent_check:${userId}`;
+  const lastCheck = parseInt(db.prepare('SELECT value FROM bot_state WHERE key = ?').get(rlKey)?.value ?? '0', 10);
+  if (Date.now() - lastCheck < INTENT_CHECK_WINDOW_MS) return null;
+
+  // Fetch recent user messages within the lookback window
+  const cutoff = Date.now() - INTENT_LOOKBACK_MS;
+  const rows = db.prepare(
+    `SELECT content, ts FROM message_log WHERE user_id = ? AND role = 'user' AND ts > ? ORDER BY ts DESC LIMIT ?`
+  ).all(userId, cutoff, INTENT_MESSAGES_LIMIT);
+
+  if (rows.length < 3) return null; // not enough signal
+
+  const transcript = rows
+    .slice()
+    .reverse()
+    .map(r => `[${new Date(r.ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}] ${r.content}`)
+    .join('\n');
+
+  const prompt = `You are analyzing a user's recent messages to find unresolved intents — things they mentioned wanting to do, figure out, or follow up on, but never completed.
+
+Messages (oldest first):
+${transcript}
+
+Output ONLY a JSON object. No explanation, no markdown.
+If you find a clear unresolved intent: { "found": true, "intent": "<short description, max 12 words>", "confidence": <0.0-1.0> }
+If nothing stands out: { "found": false }
+
+Rules:
+- Only flag something if it was mentioned but clearly never resolved in this message history
+- confidence > 0.75 means you're quite sure it's unresolved
+- Do not flag things that were resolved or dropped intentionally`;
+
+  // Record the attempt time before calling Claude (prevents burst on slow calls)
+  db.prepare('INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)').run(rlKey, String(Date.now()));
+
+  const result = spawnSync('claude', ['-p', prompt, '--max-tokens', '120'], {
+    encoding: 'utf8',
+    timeout: 20000,
+  });
+
+  if (result.status !== 0 || !result.stdout?.trim()) return null;
+
+  let parsed;
+  try {
+    const cleaned = result.stdout.trim().replace(/^```(?:json)?\n?/m, '').replace(/```\s*$/m, '').trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+
+  if (!parsed?.found || typeof parsed.intent !== 'string' || !parsed.intent.trim()) return null;
+
+  const confidence = typeof parsed.confidence === 'number'
+    ? Math.max(0, Math.min(1, parsed.confidence))
+    : 0.8;
+
+  return {
+    template: 'UNRESOLVED_INTENT',
+    confidence,
+    message: `You mentioned wanting to "${parsed.intent.trim()}" — still on your radar?`,
+    context: `Unresolved intent detected in last ${rows.length} messages: "${parsed.intent.trim()}"`,
+  };
+}
+
 export async function checkAll(userId) {
-  const [unresolvedThread, repeatedQuestion, longSilence] = await Promise.all([
+  const [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent] = await Promise.all([
     checkUnresolvedThread(userId).catch(() => null),
     checkRepeatedQuestion(userId).catch(() => null),
     checkLongSilence(userId).catch(() => null),
+    checkUnresolvedIntent(userId).catch(() => null),
   ]);
 
-  const hits = [unresolvedThread, repeatedQuestion, longSilence].filter(Boolean);
+  const hits = [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent].filter(Boolean);
 
   // Filter by threshold
   const filtered = [];

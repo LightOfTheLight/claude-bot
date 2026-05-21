@@ -2,7 +2,7 @@
 
 ## P1
 
-### [ ] UNRESOLVED_INTENT concern template (Week 3)
+### [x] UNRESOLVED_INTENT concern template (Week 3)
 **What:** New trigger template in `src/proactive/trigger.js` — Claude CLI call per user per hour to detect unresolved intents from recent conversations. Surfaces your own open loops: "You mentioned X unresolved 3 days ago — still relevant?"
 **Why:** The core "second brain" feature. Deferred from Week 2 because it requires NLP design: intent extraction prompt, cost management, and per-user rate limiting on the Claude CLI call.
 **Where to start:** `src/proactive/trigger.js` — add `UNRESOLVED_INTENT` template after the 4 DB-query templates are proven. Design the intent extraction prompt first.
