@@ -301,37 +301,6 @@ export async function callClaudeCLI({ messages, system, onChunk, onHeartbeat, se
   throw new Error('Auto-confirm loop exhausted');
 }
 
-// ─── Request size guard ───────────────────────────────────────────────────────
-
-const MAX_BODY_BYTES = 800_000; // 800 KB — stays under typical 1 MB gateway limits
-const MAX_MSG_CHARS  =  8_000;  // per-message cap before we start dropping history
-
-/**
- * Trim a messages array so the JSON body stays within maxBytes.
- *
- * Strategy:
- *   1. Truncate any individual message content that exceeds MAX_MSG_CHARS.
- *   2. If the body is still too large, drop the oldest non-system messages
- *      one at a time, always preserving the system message and the final
- *      user turn.
- */
-function trimMessages(messages, maxBytes) {
-  let result = messages.map((m) =>
-    m.content && m.content.length > MAX_MSG_CHARS
-      ? { ...m, content: m.content.slice(0, MAX_MSG_CHARS) + '\n…[truncated]' }
-      : m
-  );
-
-  // First non-system, non-final index to drop from
-  while (JSON.stringify(result).length > maxBytes && result.length > 2) {
-    const dropIdx = result[0]?.role === 'system' ? 1 : 0;
-    if (dropIdx >= result.length - 1) break; // can't drop the last message
-    result = [...result.slice(0, dropIdx), ...result.slice(dropIdx + 1)];
-  }
-
-  return result;
-}
-
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -361,13 +330,8 @@ export async function callGateway(opts, _retried = false) {
         ? [{ role: 'system', content: system }, ...messages]
         : messages;
 
-      const trimmedMessages = trimMessages(fullMessages, MAX_BODY_BYTES);
-      if (trimmedMessages.length < fullMessages.length) {
-        console.warn(`[claude] Body too large — dropped ${fullMessages.length - trimmedMessages.length} message(s) from history`);
-      }
-
       const body = JSON.stringify({
-        messages: trimmedMessages,
+        messages: fullMessages,
         providers,
         model,
         max_tokens: maxTokens,
