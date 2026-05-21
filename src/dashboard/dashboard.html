@@ -718,15 +718,27 @@ function renderStepBody(name, meta) {
         </div>
       </div>`;
 
-    case 'delivery':
-      return `<div class="step-body">
+    case 'delivery': {
+      const driveRows = (m.driveUploads ?? []).map((u) => {
+        const icon   = u.status === 'ok' ? '✅' : u.status === 'error' ? '❌' : '⚠️';
+        const detail = u.status === 'ok'
+          ? `<a href="${esc(u.link)}" target="_blank" style="color:var(--accent)">${esc(u.file)}</a> <span style="color:var(--text-dim);font-size:10px">${u.durationMs}ms</span>`
+          : u.status === 'error'
+          ? `${esc(u.file)} <span style="color:var(--red);font-size:10px">${esc(u.error ?? '')}</span>`
+          : `${esc(u.file)} <span style="color:var(--yellow);font-size:10px">no Drive auth</span>`;
+        return `<div style="display:flex;gap:6px;align-items:baseline;font-size:11px;padding:2px 0">${icon} ${detail}</div>`;
+      }).join('');
+      return `<div class="step-body" style="flex-direction:column;gap:10px;">
         <div class="step-stats">
           ${stat('Response Chars',    m.chars)}
           ${stat('File Attachments',  m.filesCount     ?? m.files)}
           ${stat('Reactions Sent',    m.reactionsCount ?? m.reactions)}
+          ${m.driveUploads ? stat('Drive Uploads', m.driveUploads.length) : ''}
           ${m.fallback ? stat('Fallback', true) : ''}
         </div>
+        ${driveRows ? `<div style="border-top:1px solid var(--border);padding-top:8px"><div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Google Drive</div>${driveRows}</div>` : ''}
       </div>`;
+    }
 
     case 'memory_persist':
       return `<div class="step-body">

@@ -1000,18 +1000,23 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
           // Split files: oversized → Google Drive link, rest → Discord attachment
           const driveLinks = [];
           const discordFiles = [];
+          const driveUploads = []; // for trace
           for (const p of filePaths.filter((p) => existsSync(p))) {
             if (isOversized(p) && hasGDriveAuth(userId)) {
+              const t = Date.now();
               try {
                 const link = await uploadToDrive(userId, p, channelName);
                 driveLinks.push(`📎 [${basename(p)}](${link}) *(uploaded to your Google Drive)*`);
+                driveUploads.push({ file: basename(p), status: 'ok', link, durationMs: Date.now() - t });
               } catch (err) {
                 console.error('[gdrive] upload failed:', err.message);
+                driveUploads.push({ file: basename(p), status: 'error', error: err.message.slice(0, 200), durationMs: Date.now() - t });
                 discordFiles.push(new AttachmentBuilder(p, { name: basename(p) }));
               }
             } else if (isOversized(p)) {
               // No Drive auth — warn the user
               driveLinks.push(`⚠️ \`${basename(p)}\` is over 25 MB. Run \`/auth_gdrive\` to connect your Google Drive for large file uploads.`);
+              driveUploads.push({ file: basename(p), status: 'no_auth' });
             } else {
               discordFiles.push(new AttachmentBuilder(p, { name: basename(p) }));
             }
@@ -1037,7 +1042,12 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
           for (const emoji of reactEmojis) await reactToMessage(reply, emoji);
           recordStep(traceId, 'delivery', {
             status: 'ok', durationMs: Date.now() - t6,
-            meta: { chars: cleanText?.length ?? 0, filesCount: attachments.length, reactionsCount: reactEmojis.length },
+            meta: {
+              chars: cleanText?.length ?? 0,
+              filesCount: attachments.length,
+              reactionsCount: reactEmojis.length,
+              driveUploads: driveUploads.length ? driveUploads : null,
+            },
           });
 
           // Schedule reminders
