@@ -17,7 +17,8 @@ const SCHEMA_V9 = 9;  // proactive_sends, proactive_feedback, skills_generated.c
 const SCHEMA_V10 = 10; // skill_invocations
 const SCHEMA_V11 = 11; // threads.channel_id for per-channel context isolation
 const SCHEMA_V12 = 12; // threads.channel_id NOT NULL + message_log.channel_id
-const TARGET_VERSION = SCHEMA_V12;
+const SCHEMA_V13 = 13; // gdrive_tokens for per-user Google Drive OAuth
+const TARGET_VERSION = SCHEMA_V13;
 
 let _db = null;
 
@@ -74,6 +75,9 @@ export async function initDb() {
   }
   if (version < SCHEMA_V12) {
     migrateV12(_db);
+  }
+  if (version < SCHEMA_V13) {
+    migrateV13(_db);
   }
 
   return _db;
@@ -442,4 +446,21 @@ function migrateV12(db) {
 
   db.pragma('user_version = 12');
   console.log('[db] schema v12 applied — threads.channel_id NOT NULL, message_log.channel_id');
+}
+
+// ─── V13: Google Drive OAuth tokens ──────────────────────────────────────────
+
+function migrateV13(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS gdrive_tokens (
+      user_id      TEXT PRIMARY KEY REFERENCES users(user_id),
+      access_token  TEXT NOT NULL,
+      refresh_token TEXT,
+      expiry_date   INTEGER,
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
+    )
+  `);
+  db.pragma('user_version = 13');
+  console.log('[db] schema v13 applied — gdrive_tokens');
 }

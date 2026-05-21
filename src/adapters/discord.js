@@ -2,6 +2,8 @@ import { Client, Events, GatewayIntentBits, Partials, AttachmentBuilder, Interac
 import * as proactiveFeedback from '../proactive/feedback.js';
 import { registerSlashCommands } from '../discord/register.js';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { statSync } from 'node:fs';
+import { getAuthUrl, hasGDriveAuth, isOversized, uploadToDrive } from '../media/gdrive.js';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { isAudio, transcribeAudio } from '../media/transcribe.js';
@@ -995,19 +997,38 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
 
           // ── Step 7: Delivery ───────────────────────────────────────────────────
           const t6 = Date.now();
-          const attachments = filePaths
-            .filter((p) => existsSync(p))
-            .map((p) => new AttachmentBuilder(p, { name: basename(p) }));
+          // Split files: oversized → Google Drive link, rest → Discord attachment
+          const driveLinks = [];
+          const discordFiles = [];
+          for (const p of filePaths.filter((p) => existsSync(p))) {
+            if (isOversized(p) && hasGDriveAuth(userId)) {
+              try {
+                const link = await uploadToDrive(userId, p);
+                driveLinks.push(`📎 [${basename(p)}](${link}) *(uploaded to your Google Drive)*`);
+              } catch (err) {
+                console.error('[gdrive] upload failed:', err.message);
+                discordFiles.push(new AttachmentBuilder(p, { name: basename(p) }));
+              }
+            } else if (isOversized(p)) {
+              // No Drive auth — warn the user
+              driveLinks.push(`⚠️ \`${basename(p)}\` is over 25 MB. Run \`/auth_gdrive\` to connect your Google Drive for large file uploads.`);
+            } else {
+              discordFiles.push(new AttachmentBuilder(p, { name: basename(p) }));
+            }
+          }
+          const attachments = discordFiles;
+          const driveText = driveLinks.length ? '\n' + driveLinks.join('\n') : '';
+          const fullText = (cleanText || '') + driveText;
 
           if (attachments.length) {
             if (liveMsg) await liveMsg.delete().catch(() => {});
-            await reply({ content: cleanText || null, files: attachments });
-          } else if (cleanText) {
+            await reply({ content: fullText || null, files: attachments });
+          } else if (fullText) {
             if (liveMsg) {
-              if (cleanText.length <= 2000) await liveMsg.edit(cleanText).catch(() => {});
-              else { await liveMsg.delete().catch(() => {}); await sendReply(reply, cleanText); }
+              if (fullText.length <= 2000) await liveMsg.edit(fullText).catch(() => {});
+              else { await liveMsg.delete().catch(() => {}); await sendReply(reply, fullText); }
             } else {
-              await sendReply(reply, cleanText);
+              await sendReply(reply, fullText);
             }
           } else if (liveMsg) {
             await liveMsg.delete().catch(() => {});
@@ -1142,7 +1163,7 @@ function buildSystem(summary, learnings, timezone = 'UTC', pins = {}) {
     `You have full permission to read files, edit files, run commands, and take any action needed. Never ask the user for permission or confirmation before acting — just do it and report what you did.`,
     `When you need to edit any file — including files under ~/.claude/, ~/.claude/skills/, or any system/config directory — use shell commands (bash, sed, python3, etc.) to modify them directly. Do NOT tell the user to run commands themselves. Do NOT say a directory is "protected" or requires manual steps. Just run the shell command and do it.`,
     `To react to the user's message with an emoji, include [REACT:emoji] in your response (e.g. [REACT:👍]). Use this sparingly — only when a reaction genuinely adds meaning (e.g. [REACT:✅] after completing a task, [REACT:👀] when you start a long job). Do NOT react to every message. Never react just to seem friendly.`,
-    `To send a file as a Discord attachment, include [FILE:/absolute/path/to/file] in your response (e.g. [FILE:C:/Users/Admin/WorkPlace/resume-agent/output/resume.pdf]). The file will be uploaded directly to the chat. Use this whenever you generate or compile a document, PDF, resume, report, or any file the user should download — do NOT paste the file contents as text.`,
+    `To send a file as a Discord attachment, include [FILE:/absolute/path/to/file] in your response (e.g. [FILE:C:/Users/Admin/WorkPlace/resume-agent/output/resume.pdf]). The file will be uploaded directly to the chat. Files over 25 MB are automatically uploaded to the user's Google Drive (if they have connected it via /auth_gdrive) and sent as a shareable link. Use [FILE:] whenever you generate or compile a document, PDF, APK, resume, report, or any file the user should download — do NOT paste the file contents as text.`,
     `The user's timezone is ${tzLabel}. When they say "tomorrow 9am" or "Friday at 3pm", interpret it in their timezone and convert to UTC for reminder tags. To set a reminder, include [REMINDER:timestamp:recur:message] in your response — timestamp must be ISO 8601 UTC. recur must be one of: none, hourly, daily, weekly, monthly. Examples: [REMINDER:2026-05-20T10:00:00Z:none:Call John] for a one-off, [REMINDER:2026-05-19T09:00:00Z:daily:Stand-up meeting] for daily. Only set reminders when the user explicitly asks. They can list with /reminders and cancel with /cancel-reminder <id>.`,
     `The user can receive a daily digest DM with upcoming reminders. To enable it, they use /set digest_time HH:MM (24h format, e.g. /set digest_time 08:30) along with /set timezone. If they ask to "send me a morning briefing" or similar, guide them to set these two preferences.`,
     `In Discord server channels, conversations automatically start in a new thread to keep channels clean. Users can disable this with /set auto_thread false. If a user asks to stop using threads, tell them to run that command.`,
@@ -1580,6 +1601,21 @@ export function start() {
         case 'backup':
           await handleCommand('/backup', userId, platformId, 'discord', reply);
           break;
+
+        case 'auth_gdrive': {
+          if (!process.env.GDRIVE_CLIENT_ID) {
+            await reply('Google Drive integration is not configured on this bot.');
+            break;
+          }
+          const url = getAuthUrl(userId);
+          const already = hasGDriveAuth(userId);
+          await reply(
+            already
+              ? `Your Google Drive is already connected. [Re-authorise](${url}) if you want to switch accounts.`
+              : `[Click here to connect your Google Drive](${url})\n\nOnce authorised, files over 25 MB will be uploaded to your Drive and shared as a link.`
+          );
+          break;
+        }
 
         default:
           await reply(`Unknown command \`${commandName}\`.`);

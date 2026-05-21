@@ -139,4 +139,8 @@ export const commandDefs = [
   new SlashCommandBuilder()
     .setName('backup')
     .setDescription('Owner: trigger a database backup now'),
+
+  new SlashCommandBuilder()
+    .setName('auth_gdrive')
+    .setDescription('Connect your Google Drive so large files (>25 MB) upload there automatically'),
 ].map((cmd) => cmd.toJSON());

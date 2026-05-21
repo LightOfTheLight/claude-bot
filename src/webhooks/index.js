@@ -11,6 +11,7 @@
  */
 
 import { getWebhookByToken, touchWebhook, getActiveChannels, getUserPlatformId } from '../memory/index.js';
+import { handleOAuthCallback } from '../media/gdrive.js';
 
 // Simple in-memory rate limiter: 20 calls per minute per webhook
 const _rlMap = new Map(); // webhookId → [timestamp, ...]
@@ -27,6 +28,36 @@ function _isRateLimited(webhookId) {
 }
 
 export function registerWebhookRoutes(app, { platformSenders = {}, sendOwnerAlert }) {
+
+  // ── Google Drive OAuth callback ───────────────────────────────────────────
+  app.get('/auth/gdrive/callback', async (req, res) => {
+    const { code, state: userId, error } = req.query;
+
+    if (error) {
+      return res.status(400).send(`<p>Google Drive authorisation denied: ${error}</p>`);
+    }
+    if (!code || !userId) {
+      return res.status(400).send('<p>Missing code or state parameter.</p>');
+    }
+
+    try {
+      await handleOAuthCallback(code, userId);
+
+      // Notify the user on Discord if possible
+      const platformId = getUserPlatformId(userId, 'discord');
+      const discordSender = platformSenders['discord'];
+      if (platformId && discordSender?.sendDM) {
+        await discordSender.sendDM(platformId, '✅ Google Drive connected! Files over 25 MB will now be uploaded to your Drive automatically.').catch(() => {});
+      }
+
+      console.log(`[gdrive] OAuth complete for user ${userId.slice(0, 8)}`);
+      res.send('<p>✅ Google Drive connected! You can close this tab and return to Discord.</p>');
+    } catch (err) {
+      console.error('[gdrive] OAuth callback error:', err.message);
+      res.status(500).send(`<p>Error: ${err.message}</p>`);
+    }
+  });
+
   app.post('/hook/:webhookId', async (req, res) => {
     const { webhookId } = req.params;
 
