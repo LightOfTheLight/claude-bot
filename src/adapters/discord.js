@@ -796,7 +796,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
       const userId = getOrCreateUser(platform, platformId);
       recordStep(traceId, 'identity', {
         status: 'ok', durationMs: Date.now() - t0,
-        meta: { userId, platformId, platform },
+        meta: { userId, platformId, platform, messageId, channelId },
       });
 
       // ── Step 2: Command check ────────────────────────────────────────────────

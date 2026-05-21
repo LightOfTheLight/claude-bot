@@ -598,6 +598,8 @@ function renderStepBody(name, meta) {
           ${stat('User ID',     m.userId)}
           ${stat('Platform ID', m.platformId)}
           ${stat('Platform',    m.platform)}
+          ${m.messageId  ? stat('Message ID',  m.messageId)  : ''}
+          ${m.channelId  ? stat('Channel / Thread ID', m.channelId) : ''}
         </div>
       </div>`;
 
