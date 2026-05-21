@@ -1227,6 +1227,14 @@ async function catchUpMissedMessages(client) {
       // Sort oldest → newest
       const sorted = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
+      // Clean up orphaned "Still working…" messages left by a previous crashed session
+      for (const m of sorted) {
+        if (m.author.id === client.user.id && m.content.includes('Still working…')) {
+          await m.delete().catch(() => {});
+          console.log(`[Discord] catch-up: deleted orphaned "Still working…" in ${channel_id}`);
+        }
+      }
+
       // Find messages directed at the bot (DM or mention) OR any message in active threads
       const isDM = channel.type === 1;
       const isThread = channel.isThread?.() ?? false;
@@ -1368,9 +1376,9 @@ export function start() {
       if (autoThreadEnabled) {
         try {
           const threadTs   = new Date().toISOString().slice(0, 16).replace('T', ' '); // "2026-05-19 14:32"
-          const threadBase = text.replace(/\[.*?\]/g, '').trim().slice(0, 40)
+          const threadBase = text.trim().slice(0, 40)
             || `${message.author.displayName ?? message.author.username}`;
-          const threadName = `[${threadTs}] ${threadBase}`;
+          const threadName = `(${threadTs}) ${threadBase}`;
           const thread = await message.startThread({
             name: threadName,
             autoArchiveDuration: 1440, // 1 day
