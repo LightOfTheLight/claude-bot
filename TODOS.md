@@ -27,7 +27,7 @@
 **Effort:** S (human ~2h / CC ~5 min)
 **Depends on:** Proactive infrastructure (this PR) shipped with EMA feedback.
 
-### [ ] Add CLAUDE.md and TODOS.md to repo root
+### [x] Add CLAUDE.md and TODOS.md to repo root
 **What:** Create `CLAUDE.md` (project coding conventions, module map, adapter patterns) and ensure `TODOS.md` tracks open work.
 **Why:** No project instructions = every AI assistant session starts cold. Costs time on re-discovery of existing patterns (dreaming.js style, scheduler patterns, etc.).
 **Effort:** S (human ~30 min / CC ~5 min)
@@ -39,7 +39,7 @@
 **Effort:** L (human ~1 week / CC ~1 day)
 **Depends on:** `proactive_sends` table populated with real data; feedback EMA calibrated; `UNRESOLVED_INTENT` template shipped.
 
-### [ ] Sub-agent spawning in proactive dispatcher (Week 3+)
+### [x] Sub-agent spawning in proactive dispatcher (Week 3+)
 **What:** When a morning brief or concern trigger identifies a task too complex for a single-turn response, spawn a specialist Claude CLI subprocess, post result back to channel when done.
 **Why:** Enables the proactive agent to take real actions, not just surface observations.
 **Effort:** M (human ~1 day / CC ~15 min)

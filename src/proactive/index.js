@@ -4,6 +4,7 @@ import { getDb } from '../memory/db.js';
 import { getContext, getProactiveUsers } from '../memory/index.js';
 import { buildBriefPrompt, buildConcernPrompt } from './templates.js';
 import { checkAll } from './trigger.js';
+import { shouldSpawnSubAgent, runSubAgent } from './subagent.js';
 
 const DEDUP_WINDOW_MS = 20 * 60 * 60 * 1000; // 20h
 const MAX_CONCURRENT = 3;
@@ -72,6 +73,13 @@ async function sendConcernHit(hit, userId, prefs, platformSenders, sendOwnerAler
   db.prepare('INSERT INTO proactive_sends (id, user_id, kind, channel_id, message, sent_at, template, confidence, discord_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
     randomUUID(), userId, `trigger_${hit.template}`, channelId || null, message, Date.now(), hit.template, hit.confidence, discordMessageId
   );
+
+  // Spawn a specialist follow-up sub-agent for high-confidence actionable hits.
+  // Intentionally not awaited — runs async so the per-minute cron is not blocked.
+  if (shouldSpawnSubAgent(hit)) {
+    runSubAgent(hit, userId, prefs, contextText, platformSenders, sendOwnerAlert)
+      .catch((err) => console.error('[proactive] subagent error:', err));
+  }
 }
 
 async function _runForUser(user, kind, platformSenders, sendOwnerAlert) {
