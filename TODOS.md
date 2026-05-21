@@ -13,7 +13,7 @@
 
 ## P2
 
-### [ ] BROKEN_STREAK concern template (Week 4+)
+### [x] BROKEN_STREAK concern template (Week 4+)
 **What:** Add `BROKEN_STREAK` template to `src/proactive/trigger.js`. Fires when a skill used daily for 5+ days goes silent.
 **Why:** Current `skills_generated` table records skill CREATION only — there is no data source for skill USE. The template cannot be implemented correctly without either a `skill_invocations` table (recording each invocation event) or a viable message_log keyword heuristic.
 **Where to start:** Schema change first — add `skill_invocations (user_id, skill_name, invoked_at)` to `db.js` V10. Wire invocation tracking in the router when a skill is used. Then add the BROKEN_STREAK template in `trigger.js`.

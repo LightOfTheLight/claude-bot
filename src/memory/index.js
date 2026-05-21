@@ -627,3 +627,11 @@ export function getUpcomingReminders(userId, windowMs = 7 * 24 * 60 * 60 * 1000)
      ORDER BY fire_at ASC`
   ).all(userId, now, now + windowMs);
 }
+
+// ─── Skill invocations ────────────────────────────────────────────────────────
+
+export function recordSkillInvocation(userId, skillName) {
+  getDb().prepare(
+    'INSERT INTO skill_invocations (id, user_id, skill_name, invoked_at) VALUES (?, ?, ?, ?)'
+  ).run(crypto.randomUUID(), userId, skillName, Date.now());
+}

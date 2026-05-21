@@ -27,6 +27,7 @@ export function buildConcernPrompt(userId, kind, context, isWeekend) {
     REPEATED_QUESTION: '🔁 Repeated question',
     LONG_SILENCE: '👋 Check-in',
     UNRESOLVED_INTENT: '💭 Open loop',
+    BROKEN_STREAK: '🔥 Broken streak',
   };
   const label = labels[kind] || '🤔 Notice';
   return `You are a personal AI assistant sending a proactive concern message to user ${userId}.

@@ -7,6 +7,8 @@ const UNRESOLVED_THREAD_SILENCE_MS = 48 * 60 * 60 * 1000;
 const LONG_SILENCE_MS = 72 * 60 * 60 * 1000;
 const REPEATED_QUESTION_MIN = 3;
 const RECENT_MESSAGES_LIMIT = 30;
+const BROKEN_STREAK_MIN_DAYS = 5;                 // skill must have been used this many consecutive days
+const BROKEN_STREAK_SILENCE_MS = 24 * 60 * 60 * 1000; // silence window that triggers the alert
 const INTENT_CHECK_WINDOW_MS = 60 * 60 * 1000;   // max 1 Claude CLI call per user per hour
 const INTENT_MESSAGES_LIMIT = 20;                 // last N user messages fed to intent extractor
 const INTENT_LOOKBACK_MS = 3 * 24 * 60 * 60 * 1000; // only surface intents mentioned in last 3 days
@@ -86,6 +88,65 @@ async function checkLongSilence(userId) {
   };
 }
 
+async function checkBrokenStreak(userId) {
+  const db = getDb();
+
+  // Find distinct skill names this user has ever invoked
+  const skills = db.prepare(
+    'SELECT DISTINCT skill_name FROM skill_invocations WHERE user_id = ? ORDER BY skill_name'
+  ).all(userId).map(r => r.skill_name);
+
+  if (!skills.length) return null;
+
+  const now = Date.now();
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+  for (const skillName of skills) {
+    // Get all invocation timestamps for this skill, oldest first
+    const rows = db.prepare(
+      'SELECT invoked_at FROM skill_invocations WHERE user_id = ? AND skill_name = ? ORDER BY invoked_at ASC'
+    ).all(userId, skillName);
+
+    if (rows.length < BROKEN_STREAK_MIN_DAYS) continue;
+
+    // Bucket into calendar dates (UTC day string "2026-05-21")
+    const daySet = new Set(
+      rows.map(r => new Date(r.invoked_at).toISOString().slice(0, 10))
+    );
+    const days = [...daySet].sort();
+
+    // Find the longest run of consecutive calendar days
+    let streak = 1;
+    let maxStreak = 1;
+    for (let i = 1; i < days.length; i++) {
+      const prev = new Date(days[i - 1]).getTime();
+      const curr = new Date(days[i]).getTime();
+      if (curr - prev === MS_PER_DAY) {
+        streak++;
+        maxStreak = Math.max(maxStreak, streak);
+      } else {
+        streak = 1;
+      }
+    }
+
+    if (maxStreak < BROKEN_STREAK_MIN_DAYS) continue;
+
+    // Check if the streak ended — last invocation was > 24h ago
+    const lastInvokedAt = rows[rows.length - 1].invoked_at;
+    if (now - lastInvokedAt < BROKEN_STREAK_SILENCE_MS) continue;
+
+    const daysAgo = Math.round((now - lastInvokedAt) / MS_PER_DAY);
+    return {
+      template: 'BROKEN_STREAK',
+      confidence: Math.min(0.95, 0.7 + (maxStreak - BROKEN_STREAK_MIN_DAYS) * 0.05),
+      message: `You used **${skillName}** daily for ${maxStreak} days but haven't touched it in ${daysAgo} day${daysAgo !== 1 ? 's' : ''}. Fallen off the habit?`,
+      context: `Skill "${skillName}" had a ${maxStreak}-day streak, last used ${daysAgo}d ago`,
+    };
+  }
+
+  return null;
+}
+
 async function checkUnresolvedIntent(userId) {
   const db = getDb();
 
@@ -155,14 +216,15 @@ Rules:
 }
 
 export async function checkAll(userId) {
-  const [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent] = await Promise.all([
+  const [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent, brokenStreak] = await Promise.all([
     checkUnresolvedThread(userId).catch(() => null),
     checkRepeatedQuestion(userId).catch(() => null),
     checkLongSilence(userId).catch(() => null),
     checkUnresolvedIntent(userId).catch(() => null),
+    checkBrokenStreak(userId).catch(() => null),
   ]);
 
-  const hits = [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent].filter(Boolean);
+  const hits = [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent, brokenStreak].filter(Boolean);
 
   // Filter by threshold
   const filtered = [];

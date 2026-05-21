@@ -42,6 +42,7 @@ import {
   deleteWebhook,
 } from '../memory/index.js';
 import { getDb } from '../memory/db.js';
+import { recordSkillInvocation } from '../memory/index.js';
 
 const tracer = trace.getTracer('claudebot', '2.0.0');
 const BOT_NAME = process.env.BOT_NAME ?? 'Claude';
@@ -871,6 +872,46 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
 
       await sendTyping();
 
+      // ── Step 4b: Intent routing (skill dispatch / reminder) ──────────────────
+      // Only runs when gateway is available — falls through to AI call otherwise.
+      let _routedSkill = null;
+      if (USE_GATEWAY) {
+        try {
+          const { classifyIntent } = await import('../router/index.js');
+          const intent = await classifyIntent(text, history.slice(-3));
+
+          if (intent.intent === 'reminder') {
+            const fireAt = Date.parse(intent.fire_at);
+            if (Number.isFinite(fireAt) && fireAt > Date.now()) {
+              createReminder(userId, {
+                message: intent.message,
+                fireAt,
+                platform: 'discord',
+                channelId: reply._msg?.channel?.id ?? null,
+                recur: null,
+              });
+              responseText = `🔔 Reminder set for ${new Date(fireAt).toLocaleString('en-US', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' })}: "${intent.message}"`;
+              await sendReply(reply, responseText);
+              appendMessage(userId, { role: 'user', content: text, platform });
+              appendMessage(userId, { role: 'assistant', content: responseText, platform });
+              recordStep(traceId, 'ai_call', { status: 'ok', durationMs: 0, meta: { provider: 'router:reminder' } });
+              recordStep(traceId, 'tag_extraction', { status: 'ok', durationMs: 0, meta: {} });
+              recordStep(traceId, 'delivery', { status: 'ok', durationMs: 0, meta: { chars: responseText.length } });
+              recordStep(traceId, 'memory_persist', { status: 'ok', durationMs: 0, meta: {} });
+              finalizeTrace(traceId, { status: 'ok' });
+              span.end();
+              return;
+            }
+          }
+
+          if (intent.intent === 'skill_dispatch' && intent.skill) {
+            _routedSkill = intent.skill;
+          }
+        } catch {
+          // Router unavailable — fall through to normal AI call
+        }
+      }
+
       // ── Step 5: AI call ──────────────────────────────────────────────────────
       const { callGateway, callClaudeCLI } = await import('../core/claude.js');
       const system = buildSystem(summary, learnings, timezone, pins);
@@ -1002,8 +1043,15 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
           responseText = cleanText;
 
         } else if (USE_GATEWAY) {
-          provider = 'gateway';
-          const result = await callGateway({ messages: msgs, system });
+          provider = _routedSkill ? `skill:${_routedSkill}` : 'gateway';
+          let result;
+          if (_routedSkill) {
+            const { runSkill } = await import('../skills/runner.js');
+            result = await runSkill(_routedSkill, { messages: msgs, summary, learnings, userId });
+            recordSkillInvocation(userId, _routedSkill);
+          } else {
+            result = await callGateway({ messages: msgs, system });
+          }
           responseText = result.text;
           toolUseCount = result.toolUseCount;
 

@@ -13,8 +13,9 @@ const SCHEMA_V5 = 5; // reminders: add recur for recurring reminders
 const SCHEMA_V6 = 6; // message_log FTS5 virtual table for full-text search
 const SCHEMA_V7 = 7; // webhooks table
 const SCHEMA_V8 = 8; // traces table for persistent request trace storage
-const SCHEMA_V9 = 9; // proactive_sends, proactive_feedback, skills_generated.content
-const TARGET_VERSION = SCHEMA_V9;
+const SCHEMA_V9 = 9;  // proactive_sends, proactive_feedback, skills_generated.content
+const SCHEMA_V10 = 10; // skill_invocations
+const TARGET_VERSION = SCHEMA_V10;
 
 let _db = null;
 
@@ -62,6 +63,9 @@ export async function initDb() {
   }
   if (version < SCHEMA_V9) {
     migrateV9(_db);
+  }
+  if (version < SCHEMA_V10) {
+    migrateV10(_db);
   }
 
   return _db;
@@ -353,4 +357,22 @@ function migrateV9(db) {
 
   db.pragma('user_version = 9');
   console.log('[db] schema v9 applied — proactive_sends, proactive_feedback, skills_generated.content');
+}
+
+// ─── V10: skill invocations ───────────────────────────────────────────────────
+
+function migrateV10(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS skill_invocations (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(user_id),
+      skill_name TEXT NOT NULL,
+      invoked_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_skill_invocations_user_skill
+      ON skill_invocations(user_id, skill_name, invoked_at);
+  `);
+  db.pragma('user_version = 10');
+  console.log('[db] schema v10 applied — skill_invocations');
 }

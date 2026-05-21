@@ -1222,7 +1222,7 @@ function renderProactiveThresholds(thresholds) {
   el.innerHTML = thresholds.map((t) => {
     const pct = Math.round(t.threshold * 100);
     const barColor = t.threshold <= 0.4 ? 'var(--red)' : t.threshold >= 0.85 ? 'var(--green)' : 'var(--accent)';
-    const label = { UNRESOLVED_THREAD: '🧠 Unresolved thread', REPEATED_QUESTION: '🔁 Repeated question', LONG_SILENCE: '👋 Long silence', UNRESOLVED_INTENT: '💭 Unresolved intent' }[t.template] ?? t.template;
+    const label = { UNRESOLVED_THREAD: '🧠 Unresolved thread', REPEATED_QUESTION: '🔁 Repeated question', LONG_SILENCE: '👋 Long silence', UNRESOLVED_INTENT: '💭 Unresolved intent', BROKEN_STREAK: '🔥 Broken streak' }[t.template] ?? t.template;
     return `
     <div style="padding:10px 16px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px;">
       <div style="display:flex;align-items:center;justify-content:space-between;">

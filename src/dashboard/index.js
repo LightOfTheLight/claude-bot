@@ -142,7 +142,7 @@ export function registerDashboardRoutes(app) {
       }
 
       // EMA thresholds per template from bot_state
-      const TEMPLATES = ['UNRESOLVED_THREAD', 'REPEATED_QUESTION', 'LONG_SILENCE', 'UNRESOLVED_INTENT'];
+      const TEMPLATES = ['UNRESOLVED_THREAD', 'REPEATED_QUESTION', 'LONG_SILENCE', 'UNRESOLVED_INTENT', 'BROKEN_STREAK'];
       const thresholds = TEMPLATES.map((template) => {
         const row = db.prepare('SELECT value FROM bot_state WHERE key = ?').get(`proactive_threshold_${template}`);
         const threshold = row ? parseFloat(row.value) : 0.7;
