@@ -46,7 +46,7 @@ export async function reviewCandidates() {
   const cutoff = Date.now() - IDLE_MS;
 
   const candidates = db.prepare(`
-    SELECT user_id, tool_use_total
+    SELECT user_id, channel_id, tool_use_total
     FROM threads
     WHERE tool_use_total > ?
       AND last_active < ?
@@ -54,18 +54,18 @@ export async function reviewCandidates() {
   `).all(TOOL_USE_THRESHOLD, cutoff);
 
   for (const thread of candidates) {
-    await reviewThread(thread.user_id, thread.tool_use_total);
+    await reviewThread(thread.user_id, thread.tool_use_total, thread.channel_id ?? null);
     await runConcernChecks(thread.user_id, {}, _platformSenders, _sendOwnerAlert).catch(() => {});
   }
 }
 
-export async function reviewThread(userId, toolUseTotal) {
+export async function reviewThread(userId, toolUseTotal, channelId = null) {
   return tracer.startActiveSpan('dreaming.review', async (span) => {
     span.setAttribute('user_id', userId);
     const db = getDb();
 
     try {
-      const { messages, summary } = getContext(userId);
+      const { messages, summary } = getContext(userId, channelId);
 
       const confidenceScore = scoreThread({ toolUseTotal, messages });
       span.setAttribute('confidence_score', confidenceScore);
@@ -137,7 +137,7 @@ export async function reviewThread(userId, toolUseTotal) {
       }
 
       // Only mark dreamed=1 on success (Reviewer Concern: silent data loss)
-      db.prepare('UPDATE threads SET dreamed = 1 WHERE user_id = ?').run(userId);
+      db.prepare('UPDATE threads SET dreamed = 1 WHERE user_id = ? AND channel_id IS ?').run(userId, channelId);
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (err) {
       span.recordException(err);
