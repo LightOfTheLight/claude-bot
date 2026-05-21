@@ -783,12 +783,12 @@ async function handleCommand(text, userId, platformId, platform, reply, channelI
 
 // ─── Message pipeline ─────────────────────────────────────────────────────────
 
-async function handleMessage(text, platformId, platform, reply, sendTyping, { skipCommands = false, channelId = null } = {}) {
+async function handleMessage(text, platformId, platform, reply, sendTyping, { skipCommands = false, channelId = null, messageId = null } = {}) {
   return tracer.startActiveSpan('bot.message.receive', async (span) => {
     span.setAttribute('platform', platform);
 
     // Create a pipeline trace for the dashboard
-    const traceId = createTrace({ platform, userId: platformId, preview: text });
+    const traceId = createTrace({ platform, userId: platformId, preview: text, channelId, messageId });
 
     try {
       // ── Step 1: Identity ──────────────────────────────────────────────────────
@@ -1278,7 +1278,7 @@ async function catchUpMissedMessages(client) {
         'discord',
         (r) => lastDirected.reply(r),
         () => channel.sendTyping(),
-        { channelId: channel_id },
+        { channelId: channel_id, messageId: lastDirected.id },
       );
     } catch (err) {
       console.warn(`[Discord] catch-up failed for channel ${channel_id}:`, err.message);
@@ -1415,7 +1415,7 @@ export function start() {
         'discord',
         trackedReply,
         () => typingChannel.sendTyping(),
-        { channelId: effectiveChannelId },
+        { channelId: effectiveChannelId, messageId: message.id },
       );
     } finally {
       _inFlight.delete(message.id);
@@ -1467,7 +1467,7 @@ export function start() {
       'discord',
       (r) => reaction.message.reply(r),
       () => channel.sendTyping(),
-      { skipCommands: true },
+      { skipCommands: true, messageId: reaction.message.id },
     );
   });
 

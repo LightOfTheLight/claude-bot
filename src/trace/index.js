@@ -82,6 +82,7 @@ export function createTrace(meta) {
     platform: meta.platform ?? 'unknown',
     userId: meta.userId ?? 'unknown',
     channelId: meta.channelId ?? null,
+    messageId: meta.messageId ?? null,
     preview: (meta.preview ?? '').slice(0, 120),
     steps: [],
     error: null,

@@ -755,7 +755,7 @@ function filteredTraces() {
   const st = filterEl.value;
   return traces.filter((t) => {
     if (st && t.status !== st) return false;
-    if (q && !t.preview?.toLowerCase().includes(q) && !(t.userId ?? '').includes(q)) return false;
+    if (q && !t.preview?.toLowerCase().includes(q) && !(t.userId ?? '').includes(q) && !(t.messageId ?? '').includes(q)) return false;
     return true;
   });
 }
@@ -858,6 +858,7 @@ function renderDetail(t) {
           <div class="kv"><span class="k">Started</span><span class="v">${ts(t.startedAt)}</span></div>
           <div class="kv"><span class="k">Duration</span><span class="v">${dur(t.durationMs)}</span></div>
           <div class="kv"><span class="k">Steps</span><span class="v">${t.steps?.length ?? 0}/${STEP_ORDER.length}</span></div>
+          ${t.messageId ? `<div class="kv"><span class="k">Msg ID</span><span class="v" style="font-size:10px;color:var(--text-dim)">${esc(t.messageId)}</span></div>` : ''}
           ${t.error ? `<div class="kv" style="grid-column:1/-1"><span class="k">Error</span><span class="v" style="color:var(--red)">${esc(t.error)}</span></div>` : ''}
         </div>
       </div>
