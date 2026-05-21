@@ -14,7 +14,7 @@
 
 import { trace, SpanStatusCode, context, propagation } from '@opentelemetry/api';
 import { spawn } from 'node:child_process';
-import { writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
+import { writeFileSync, readFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -107,6 +107,36 @@ const CLAUDE_WORK_DIR = process.env.CLAUDE_WORK_DIR ?? 'C:\\Users\\Admin\\WorkPl
  */
 function workDirToSlug(workDir) {
   return workDir.replace(/:/g, '-').replace(/[\\\/]/g, '-');
+}
+
+/**
+ * Count tool_use blocks in a session JSONL file that were written at or after
+ * `sinceMs` (Unix timestamp in ms). Used to get the real toolUseCount after a
+ * `claude -p` call (which only emits final text, not structured tool events).
+ */
+function countToolUsesInSession(sessionId, sinceMs) {
+  try {
+    const projectDir = join(homedir(), '.claude', 'projects', workDirToSlug(CLAUDE_WORK_DIR));
+    const filePath = join(projectDir, `${sessionId}.jsonl`);
+    const lines = readFileSync(filePath, 'utf8').split('\n');
+    let count = 0;
+    const sinceDate = new Date(sinceMs);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type !== 'assistant') continue;
+        const entryTs = obj.timestamp ? new Date(obj.timestamp) : null;
+        if (entryTs && entryTs < sinceDate) continue;
+        for (const c of (obj.message?.content ?? [])) {
+          if (c?.type === 'tool_use') count++;
+        }
+      } catch { /* skip malformed lines */ }
+    }
+    return count;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -261,6 +291,7 @@ export async function callClaudeCLI({ messages, system, onChunk, onHeartbeat, se
   console.log(`[claude-cli] Starting CLI (${usingResume ? `resume ${currentSessionId.slice(0, 8)}…` : 'fresh'})`);
 
   const currentMessages = [...messages];
+  const callStartMs = Date.now();
 
   for (let attempt = 0; attempt <= MAX_AUTO_CONFIRMS; attempt++) {
     const overrideText = attempt > 0 ? 'Y' : undefined; // auto-confirm iterations
@@ -293,7 +324,10 @@ export async function callClaudeCLI({ messages, system, onChunk, onHeartbeat, se
     currentSessionId = getNewestSessionId() ?? currentSessionId;
 
     if (!isConfirmationPrompt(text) || attempt === MAX_AUTO_CONFIRMS) {
-      return { text, toolCalls: [], toolUseCount: 0, sessionId: currentSessionId };
+      const toolUseCount = currentSessionId
+        ? countToolUsesInSession(currentSessionId, callStartMs)
+        : 0;
+      return { text, toolCalls: [], toolUseCount, sessionId: currentSessionId };
     }
 
     console.log(`[claude-cli] Auto-confirming (attempt ${attempt + 1}): "${text.slice(-80)}"`);
