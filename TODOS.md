@@ -32,6 +32,13 @@
 **Why:** No project instructions = every AI assistant session starts cold. Costs time on re-discovery of existing patterns (dreaming.js style, scheduler patterns, etc.).
 **Effort:** S (human ~30 min / CC ~5 min)
 
+### [ ] Cross-channel topic linking via dreaming (Month 2+)
+**What:** When `auto_thread = false`, all messages in a channel share the same context bucket — different topics bleed together. The dreaming + learning system should solve this: as the bot dreams over message_log, it cross-links messages from different channels/threads that share the same topic (keywords, entities, intent), and surfaces those links as learnings. A user asking about "CI setup" in channel A and channel B would have both threads connected in memory.
+**Why:** Per-channel context isolation (V11) fixes thread bleed but leaves the `auto_thread = false` multi-topic case unsolved. The dreaming system is the right place to handle this — it already reads full message_log history and generates structured insights.
+**Where to start:** `src/dreaming/index.js` — after skill generation, run a topic-clustering pass over recent `message_log` rows. Group messages by shared keywords/entities. Write cross-channel topic links into `learnings` so they appear in future context injections. A new `topic_clusters` table (V12) could store the clusters for efficient lookup.
+**Effort:** L (human ~1 week / CC ~2h)
+**Depends on:** V11 channel_id isolation shipped; dreaming system proven with real skill data.
+
 ### [ ] Temporal advocate — future-self projection (Month 2)
 **What:** Nightly projection engine: "Given patterns from the last 30 days, what will Thursday look like if nothing changes?" Surfaces preemptive restructuring suggestions before bad days happen. Not reminders — pattern-driven foresight.
 **Why:** The 10x version of the proactive agent. Requires weeks of `proactive_sends` data + feedback ratings to be useful.

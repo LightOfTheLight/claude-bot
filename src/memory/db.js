@@ -15,7 +15,8 @@ const SCHEMA_V7 = 7; // webhooks table
 const SCHEMA_V8 = 8; // traces table for persistent request trace storage
 const SCHEMA_V9 = 9;  // proactive_sends, proactive_feedback, skills_generated.content
 const SCHEMA_V10 = 10; // skill_invocations
-const TARGET_VERSION = SCHEMA_V10;
+const SCHEMA_V11 = 11; // threads.channel_id for per-channel context isolation
+const TARGET_VERSION = SCHEMA_V11;
 
 let _db = null;
 
@@ -66,6 +67,9 @@ export async function initDb() {
   }
   if (version < SCHEMA_V10) {
     migrateV10(_db);
+  }
+  if (version < SCHEMA_V11) {
+    migrateV11(_db);
   }
 
   return _db;
@@ -375,4 +379,19 @@ function migrateV10(db) {
   `);
   db.pragma('user_version = 10');
   console.log('[db] schema v10 applied — skill_invocations');
+}
+
+// ─── V11: per-channel thread context ─────────────────────────────────────────
+
+function migrateV11(db) {
+  // Add channel_id to threads so each Discord channel/thread gets its own
+  // rolling context window. NULL = DM / legacy global context.
+  // SQLite unique indexes treat NULLs as distinct, so uniqueness for
+  // (user_id, channel_id) pairs is enforced at the application layer.
+  const cols = db.prepare('PRAGMA table_info(threads)').all().map((c) => c.name);
+  if (!cols.includes('channel_id')) {
+    db.exec('ALTER TABLE threads ADD COLUMN channel_id TEXT DEFAULT NULL');
+  }
+  db.pragma('user_version = 11');
+  console.log('[db] schema v11 applied — threads.channel_id');
 }

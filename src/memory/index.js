@@ -94,9 +94,9 @@ export function createLinkToken(fromUserId, fromPlatform) {
  * Returns { messages, summary, learnings } for context injection.
  * messages: last ROLLING_WINDOW entries in chronological order.
  */
-export function getContext(userId) {
+export function getContext(userId, channelId = null) {
   const db = getDb();
-  const thread = db.prepare('SELECT * FROM threads WHERE user_id = ?').get(userId);
+  const thread = db.prepare('SELECT * FROM threads WHERE user_id = ? AND channel_id IS ?').get(userId, channelId);
   if (!thread) return { messages: [], summary: null, learnings: [] };
 
   let messages = [];
@@ -113,12 +113,12 @@ export function getContext(userId) {
  * Dual-writes to message_log (v2) when the table exists.
  * Returns msg_uuid for callers that need fork cursors.
  */
-export function appendMessage(userId, { role, content, platform = null }) {
+export function appendMessage(userId, { role, content, platform = null, channelId = null }) {
   const db = getDb();
   const now = Date.now();
   const msgUuid = crypto.randomUUID();
 
-  // Dual-write to message_log if v2 schema is present
+  // Dual-write to message_log (append-only, not scoped by channel)
   const hasLog = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' AND name='message_log'"
   ).get();
@@ -134,27 +134,36 @@ export function appendMessage(userId, { role, content, platform = null }) {
     `).run(userId, msgUuid, prev?.msg_uuid ?? null, role, content, platform, now);
   }
 
-  // Rebuild rolling window in threads.messages
-  const thread = db.prepare('SELECT messages, message_count FROM threads WHERE user_id = ?').get(userId);
+  // Get or create the channel-scoped thread
+  let thread = db.prepare('SELECT * FROM threads WHERE user_id = ? AND channel_id IS ?').get(userId, channelId);
+  if (!thread) {
+    const threadId = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO threads (id, user_id, channel_id, messages, summary, learnings, created_at, updated_at)
+      VALUES (?, ?, ?, '[]', NULL, '[]', ?, ?)
+    `).run(threadId, userId, channelId, now, now);
+    thread = db.prepare('SELECT * FROM threads WHERE id = ?').get(threadId);
+  }
+
   let messages = [];
-  try { messages = JSON.parse(thread?.messages ?? '[]'); } catch {}
+  try { messages = JSON.parse(thread.messages ?? '[]'); } catch {}
 
   messages.push({ role, content, platform, ts: now });
   if (messages.length > ROLLING_WINDOW) {
     messages = messages.slice(messages.length - ROLLING_WINDOW);
   }
 
-  const newCount = (thread?.message_count ?? 0) + 1;
+  const newCount = (thread.message_count ?? 0) + 1;
 
   db.prepare(`
     UPDATE threads
     SET messages = ?, message_count = ?, last_active = ?, updated_at = ?
-    WHERE user_id = ?
-  `).run(JSON.stringify(messages), newCount, now, now, userId);
+    WHERE id = ?
+  `).run(JSON.stringify(messages), newCount, now, now, thread.id);
 
   // Trigger summarisation when window fills (async — don't block the response path)
   if (newCount > 0 && newCount % SUMMARY_TRIGGER === 0) {
-    import('./summarize.js').then(({ maybeSummarize }) => maybeSummarize(userId)).catch(() => {});
+    import('./summarize.js').then(({ maybeSummarize }) => maybeSummarize(userId, channelId)).catch(() => {});
   }
 
   return msgUuid;
@@ -163,12 +172,12 @@ export function appendMessage(userId, { role, content, platform = null }) {
 /**
  * Increment tool_use_total for a user's thread (called by runner after gateway response).
  */
-export function incrementToolUse(userId, count) {
+export function incrementToolUse(userId, count, channelId = null) {
   if (!count) return;
   const db = getDb();
   db.prepare(
-    'UPDATE threads SET tool_use_total = tool_use_total + ?, updated_at = ? WHERE user_id = ?'
-  ).run(count, Date.now(), userId);
+    'UPDATE threads SET tool_use_total = tool_use_total + ?, updated_at = ? WHERE user_id = ? AND channel_id IS ?'
+  ).run(count, Date.now(), userId, channelId);
 }
 
 // ─── Rollback helpers ─────────────────────────────────────────────────────────
@@ -211,15 +220,15 @@ export function listLearnings(userId) {
   try { return JSON.parse(thread.learnings); } catch { return []; }
 }
 
-/** Reset thread to blank slate (preserves identity). */
-export function resetThread(userId) {
+/** Reset thread to blank slate (preserves identity). Scoped to the given channel. */
+export function resetThread(userId, channelId = null) {
   getDb().prepare(`
     UPDATE threads
     SET messages = '[]', summary = NULL, learnings = '[]',
         message_count = 0, tool_use_total = 0, dreamed = 0,
         last_active = NULL, updated_at = ?
-    WHERE user_id = ?
-  `).run(Date.now(), userId);
+    WHERE user_id = ? AND channel_id IS ?
+  `).run(Date.now(), userId, channelId);
 }
 
 // ─── User preferences ────────────────────────────────────────────────────────

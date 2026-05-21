@@ -144,7 +144,7 @@ async function attachmentsToText(attachments) {
 // ─── Built-in commands ────────────────────────────────────────────────────────
 
 /** Returns true if the message was a built-in command (handled internally). */
-async function handleCommand(text, userId, platformId, platform, reply) {
+async function handleCommand(text, userId, platformId, platform, reply, channelId = null) {
   const lower = text.trim().toLowerCase();
 
   if (lower.startsWith('/forget ')) {
@@ -164,7 +164,7 @@ async function handleCommand(text, userId, platformId, platform, reply) {
   }
 
   if (lower === '/reset-context confirm') {
-    resetThread(userId);
+    resetThread(userId, channelId);
     setBotState(`cli_session:${userId}`, '');
     clearRateLimit(userId);
     await reply('Context reset. Starting fresh.');
@@ -783,7 +783,7 @@ async function handleCommand(text, userId, platformId, platform, reply) {
 
 // ─── Message pipeline ─────────────────────────────────────────────────────────
 
-async function handleMessage(text, platformId, platform, reply, sendTyping, { skipCommands = false } = {}) {
+async function handleMessage(text, platformId, platform, reply, sendTyping, { skipCommands = false, channelId = null } = {}) {
   return tracer.startActiveSpan('bot.message.receive', async (span) => {
     span.setAttribute('platform', platform);
 
@@ -802,7 +802,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
       // ── Step 2: Command check ────────────────────────────────────────────────
       if (!skipCommands) {
         const t1 = Date.now();
-        const handled = await handleCommand(text, userId, platformId, platform, reply);
+        const handled = await handleCommand(text, userId, platformId, platform, reply, channelId);
         recordStep(traceId, 'command_check', {
           status: handled ? 'skip' : 'ok', durationMs: Date.now() - t1,
           meta: { handled, cmd: handled ? text.slice(0, 60) : null },
@@ -851,7 +851,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
 
       // ── Step 4: Context fetch ────────────────────────────────────────────────
       const t3 = Date.now();
-      const { messages: history, summary, learnings } = getContext(userId);
+      const { messages: history, summary, learnings } = getContext(userId, channelId);
       const timezone = getPreference(userId, 'timezone') ?? 'UTC';
       const pins     = getPreference(userId, 'pins') ?? {};
       recordStep(traceId, 'context_fetch', {
@@ -892,8 +892,8 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
               });
               responseText = `🔔 Reminder set for ${new Date(fireAt).toLocaleString('en-US', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' })}: "${intent.message}"`;
               await sendReply(reply, responseText);
-              appendMessage(userId, { role: 'user', content: text, platform });
-              appendMessage(userId, { role: 'assistant', content: responseText, platform });
+              appendMessage(userId, { role: 'user', content: text, platform, channelId });
+              appendMessage(userId, { role: 'assistant', content: responseText, platform, channelId });
               recordStep(traceId, 'ai_call', { status: 'ok', durationMs: 0, meta: { provider: 'router:reminder' } });
               recordStep(traceId, 'tag_extraction', { status: 'ok', durationMs: 0, meta: {} });
               recordStep(traceId, 'delivery', { status: 'ok', durationMs: 0, meta: { chars: responseText.length } });
@@ -1104,9 +1104,9 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
 
       // ── Step 8: Memory persist ───────────────────────────────────────────────
       const t7 = Date.now();
-      appendMessage(userId, { role: 'user', content: text, platform });
-      appendMessage(userId, { role: 'assistant', content: responseText, platform });
-      if (toolUseCount) incrementToolUse(userId, toolUseCount);
+      appendMessage(userId, { role: 'user', content: text, platform, channelId });
+      appendMessage(userId, { role: 'assistant', content: responseText, platform, channelId });
+      if (toolUseCount) incrementToolUse(userId, toolUseCount, channelId);
       recordStep(traceId, 'memory_persist', {
         status: 'ok', durationMs: Date.now() - t7,
         meta: {
@@ -1270,6 +1270,7 @@ async function catchUpMissedMessages(client) {
         'discord',
         (r) => lastDirected.reply(r),
         () => channel.sendTyping(),
+        { channelId: channel_id },
       );
     } catch (err) {
       console.warn(`[Discord] catch-up failed for channel ${channel_id}:`, err.message);
@@ -1354,6 +1355,12 @@ export function start() {
     let replyFn = (r) => message.reply(r); // default: reply in the channel
     let typingChannel = message.channel;
 
+    // effectiveChannelId: the most-specific channel identifier to use as context key.
+    //   DM          → null  (context scoped to user only)
+    //   Thread msg  → message.channel.id  (Discord thread snowflake)
+    //   Guild msg   → message.channel.id initially; updated to thread.id if auto-thread fires
+    let effectiveChannelId = isDM ? null : message.channel.id;
+
     const shouldAutoThread = isMentioned && !isDM && !isThread;
     if (shouldAutoThread) {
       const _userId = getOrCreateUser('discord', message.author.id);
@@ -1374,10 +1381,13 @@ export function start() {
           // original message visually in Discord, no need to also reply in the channel.
           replyFn = (r) => thread.send(r);
           typingChannel = thread;
+          // Store context under the thread ID, not the parent channel, so this
+          // conversation is isolated from other threads in the same channel.
+          effectiveChannelId = thread.id;
           console.log(`[Discord] thread created: ${thread.id} for msg ${message.id}`);
         } catch (err) {
           console.warn(`[Discord] thread creation failed (missing perms?): ${err.message}`);
-          // fall back to channel reply
+          // fall back to channel reply — effectiveChannelId stays as parent channel
         }
       }
     }
@@ -1398,6 +1408,7 @@ export function start() {
         'discord',
         trackedReply,
         () => typingChannel.sendTyping(),
+        { channelId: effectiveChannelId },
       );
     } finally {
       _inFlight.delete(message.id);
@@ -1549,7 +1560,7 @@ export function start() {
         }
 
         case 'reset_context':
-          await handleCommand('/reset-context confirm', userId, platformId, 'discord', reply);
+          await handleCommand('/reset-context confirm', userId, platformId, 'discord', reply, interaction.channelId ?? null);
           break;
 
         case 'webhook': {
