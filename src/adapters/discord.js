@@ -1355,11 +1355,10 @@ export function start() {
     let replyFn = (r) => message.reply(r); // default: reply in the channel
     let typingChannel = message.channel;
 
-    // effectiveChannelId: the most-specific channel identifier to use as context key.
-    //   DM          → null  (context scoped to user only)
-    //   Thread msg  → message.channel.id  (Discord thread snowflake)
-    //   Guild msg   → message.channel.id initially; updated to thread.id if auto-thread fires
-    let effectiveChannelId = isDM ? null : message.channel.id;
+    // effectiveChannelId: always the Discord channel snowflake — unique for every DM,
+    // guild channel, and thread. Updated to thread.id when auto-thread fires so
+    // the first exchange is stored under the thread context, not the parent channel.
+    let effectiveChannelId = message.channel.id;
 
     const shouldAutoThread = isMentioned && !isDM && !isThread;
     if (shouldAutoThread) {

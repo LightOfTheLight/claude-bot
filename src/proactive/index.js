@@ -1,7 +1,7 @@
 import { spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import { getDb } from '../memory/db.js';
-import { getContext, getProactiveUsers } from '../memory/index.js';
+import { getRecentMessages, getProactiveUsers } from '../memory/index.js';
 import { buildBriefPrompt, buildConcernPrompt } from './templates.js';
 import { checkAll } from './trigger.js';
 import { shouldSpawnSubAgent, runSubAgent } from './subagent.js';
@@ -53,8 +53,8 @@ async function sendConcernHit(hit, userId, prefs, platformSenders, sendOwnerAler
   const tz = prefs?.timezone || process.env.TZ || 'UTC';
   const isWeekend = isWeekendFor(tz);
   const prompt = buildConcernPrompt(userId, hit.template, hit.context || hit.message, isWeekend);
-  const { messages, summary } = getContext(userId);
-  const contextText = [summary, ...messages.slice(-10).map(m => `${m.role}: ${m.content}`)].filter(Boolean).join('\n');
+  const recentMsgs = getRecentMessages(userId, 10);
+  const contextText = recentMsgs.map(m => `${m.role}: ${m.content}`).join('\n');
   const message = callClaude(prompt, contextText);
   if (!message) return;
 
@@ -89,8 +89,8 @@ async function _runForUser(user, kind, platformSenders, sendOwnerAlert) {
   const tz = prefs?.timezone || process.env.TZ || 'UTC';
   const isWeekend = isWeekendFor(tz);
 
-  const { messages, summary } = getContext(userId);
-  const contextText = [summary, ...messages.slice(-20).map(m => `${m.role}: ${m.content}`)].filter(Boolean).join('\n');
+  const recentMsgs = getRecentMessages(userId, 20);
+  const contextText = recentMsgs.map(m => `${m.role}: ${m.content}`).join('\n');
 
   const prompt = buildBriefPrompt(userId, kind, isWeekend);
   const message = callClaude(prompt, contextText);

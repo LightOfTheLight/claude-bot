@@ -7,9 +7,9 @@ const MESSAGES_TO_COMPRESS = 50;
  * Summarises the oldest MESSAGES_TO_COMPRESS messages and appends to threads.summary.
  * Removes those messages from the rolling window JSON.
  */
-export async function maybeSummarize(userId, channelId = null) {
+export async function maybeSummarize(userId, channelId) {
   const db = getDb();
-  const thread = db.prepare('SELECT id, messages, summary FROM threads WHERE user_id = ? AND channel_id IS ?').get(userId, channelId);
+  const thread = db.prepare('SELECT id, messages, summary FROM threads WHERE user_id = ? AND channel_id = ?').get(userId, channelId);
   if (!thread) return;
 
   let messages = [];

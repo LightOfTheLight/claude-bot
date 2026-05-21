@@ -137,7 +137,7 @@ export async function reviewThread(userId, toolUseTotal, channelId = null) {
       }
 
       // Only mark dreamed=1 on success (Reviewer Concern: silent data loss)
-      db.prepare('UPDATE threads SET dreamed = 1 WHERE user_id = ? AND channel_id IS ?').run(userId, channelId);
+      db.prepare('UPDATE threads SET dreamed = 1 WHERE user_id = ? AND channel_id = ?').run(userId, channelId);
       span.setStatus({ code: SpanStatusCode.OK });
     } catch (err) {
       span.recordException(err);

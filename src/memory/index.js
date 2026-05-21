@@ -31,10 +31,7 @@ export function getOrCreateUser(platform, platformId) {
       'INSERT INTO platform_ids (platform, platform_id, user_id, linked_at) VALUES (?, ?, ?, ?)'
     ).run(platform, platformId, userId, now);
 
-    db.prepare(`
-      INSERT INTO threads (id, user_id, messages, summary, learnings, created_at, updated_at)
-      VALUES (?, ?, '[]', NULL, '[]', ?, ?)
-    `).run(userId, userId, now, now);
+    // Thread is created lazily on first message via appendMessage — no default row needed.
   })();
 
   return userId;
@@ -94,9 +91,9 @@ export function createLinkToken(fromUserId, fromPlatform) {
  * Returns { messages, summary, learnings } for context injection.
  * messages: last ROLLING_WINDOW entries in chronological order.
  */
-export function getContext(userId, channelId = null) {
+export function getContext(userId, channelId) {
   const db = getDb();
-  const thread = db.prepare('SELECT * FROM threads WHERE user_id = ? AND channel_id IS ?').get(userId, channelId);
+  const thread = db.prepare('SELECT * FROM threads WHERE user_id = ? AND channel_id = ?').get(userId, channelId);
   if (!thread) return { messages: [], summary: null, learnings: [] };
 
   let messages = [];
@@ -113,7 +110,7 @@ export function getContext(userId, channelId = null) {
  * Dual-writes to message_log (v2) when the table exists.
  * Returns msg_uuid for callers that need fork cursors.
  */
-export function appendMessage(userId, { role, content, platform = null, channelId = null }) {
+export function appendMessage(userId, { role, content, platform = null, channelId }) {
   const db = getDb();
   const now = Date.now();
   const msgUuid = crypto.randomUUID();
@@ -129,13 +126,13 @@ export function appendMessage(userId, { role, content, platform = null, channelI
     ).get(userId);
 
     db.prepare(`
-      INSERT INTO message_log (user_id, msg_uuid, parent_uuid, role, content, platform, ts)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(userId, msgUuid, prev?.msg_uuid ?? null, role, content, platform, now);
+      INSERT INTO message_log (user_id, msg_uuid, parent_uuid, role, content, platform, channel_id, ts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(userId, msgUuid, prev?.msg_uuid ?? null, role, content, platform, channelId, now);
   }
 
   // Get or create the channel-scoped thread
-  let thread = db.prepare('SELECT * FROM threads WHERE user_id = ? AND channel_id IS ?').get(userId, channelId);
+  let thread = db.prepare('SELECT * FROM threads WHERE user_id = ? AND channel_id = ?').get(userId, channelId);
   if (!thread) {
     const threadId = crypto.randomUUID();
     db.prepare(`
@@ -172,12 +169,22 @@ export function appendMessage(userId, { role, content, platform = null, channelI
 /**
  * Increment tool_use_total for a user's thread (called by runner after gateway response).
  */
-export function incrementToolUse(userId, count, channelId = null) {
+export function incrementToolUse(userId, count, channelId) {
   if (!count) return;
   const db = getDb();
   db.prepare(
-    'UPDATE threads SET tool_use_total = tool_use_total + ?, updated_at = ? WHERE user_id = ? AND channel_id IS ?'
+    'UPDATE threads SET tool_use_total = tool_use_total + ?, updated_at = ? WHERE user_id = ? AND channel_id = ?'
   ).run(count, Date.now(), userId, channelId);
+}
+
+/**
+ * Return the last N messages for a user across all channels, from message_log.
+ * Used by the proactive system which needs a cross-channel recent activity view.
+ */
+export function getRecentMessages(userId, limit = 20) {
+  return getDb().prepare(
+    'SELECT role, content, channel_id, ts FROM message_log WHERE user_id = ? ORDER BY ts DESC LIMIT ?'
+  ).all(userId, limit).reverse();
 }
 
 // ─── Rollback helpers ─────────────────────────────────────────────────────────
@@ -221,13 +228,13 @@ export function listLearnings(userId) {
 }
 
 /** Reset thread to blank slate (preserves identity). Scoped to the given channel. */
-export function resetThread(userId, channelId = null) {
+export function resetThread(userId, channelId) {
   getDb().prepare(`
     UPDATE threads
     SET messages = '[]', summary = NULL, learnings = '[]',
         message_count = 0, tool_use_total = 0, dreamed = 0,
         last_active = NULL, updated_at = ?
-    WHERE user_id = ? AND channel_id IS ?
+    WHERE user_id = ? AND channel_id = ?
   `).run(Date.now(), userId, channelId);
 }
 

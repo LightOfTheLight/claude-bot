@@ -16,7 +16,8 @@ const SCHEMA_V8 = 8; // traces table for persistent request trace storage
 const SCHEMA_V9 = 9;  // proactive_sends, proactive_feedback, skills_generated.content
 const SCHEMA_V10 = 10; // skill_invocations
 const SCHEMA_V11 = 11; // threads.channel_id for per-channel context isolation
-const TARGET_VERSION = SCHEMA_V11;
+const SCHEMA_V12 = 12; // threads.channel_id NOT NULL + message_log.channel_id
+const TARGET_VERSION = SCHEMA_V12;
 
 let _db = null;
 
@@ -70,6 +71,9 @@ export async function initDb() {
   }
   if (version < SCHEMA_V11) {
     migrateV11(_db);
+  }
+  if (version < SCHEMA_V12) {
+    migrateV12(_db);
   }
 
   return _db;
@@ -394,4 +398,48 @@ function migrateV11(db) {
   }
   db.pragma('user_version = 11');
   console.log('[db] schema v11 applied — threads.channel_id');
+}
+
+// ─── V12: threads.channel_id NOT NULL + message_log.channel_id ───────────────
+
+function migrateV12(db) {
+  // 1. Delete any remaining legacy null-channel rows (user cleared these manually)
+  db.exec('DELETE FROM threads WHERE channel_id IS NULL');
+
+  // 2. Recreate threads with channel_id NOT NULL.
+  //    SQLite cannot add a NOT NULL constraint via ALTER COLUMN, so we
+  //    create a new table, copy surviving rows, drop old, rename.
+  db.exec(`
+    CREATE TABLE threads_v12 (
+      id             TEXT    PRIMARY KEY,
+      user_id        TEXT    NOT NULL REFERENCES users(user_id),
+      channel_id     TEXT    NOT NULL,
+      messages       JSON    NOT NULL DEFAULT '[]',
+      summary        TEXT,
+      learnings      JSON    NOT NULL DEFAULT '[]',
+      message_count  INTEGER NOT NULL DEFAULT 0,
+      tool_use_total INTEGER NOT NULL DEFAULT 0,
+      last_active    INTEGER,
+      dreamed        INTEGER NOT NULL DEFAULT 0,
+      created_at     INTEGER NOT NULL,
+      updated_at     INTEGER NOT NULL
+    );
+    INSERT INTO threads_v12
+      SELECT id, user_id, channel_id, messages, summary, learnings,
+             message_count, tool_use_total, last_active, dreamed,
+             created_at, updated_at
+      FROM threads
+      WHERE channel_id IS NOT NULL;
+    DROP TABLE threads;
+    ALTER TABLE threads_v12 RENAME TO threads;
+  `);
+
+  // 3. Add channel_id to message_log for future messages
+  const mlCols = db.prepare('PRAGMA table_info(message_log)').all().map((c) => c.name);
+  if (!mlCols.includes('channel_id')) {
+    db.exec('ALTER TABLE message_log ADD COLUMN channel_id TEXT');
+  }
+
+  db.pragma('user_version = 12');
+  console.log('[db] schema v12 applied — threads.channel_id NOT NULL, message_log.channel_id');
 }
