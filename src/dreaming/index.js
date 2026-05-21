@@ -11,6 +11,7 @@
  */
 
 import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { trace, SpanStatusCode } from '@opentelemetry/api';
@@ -19,6 +20,7 @@ import { getContext } from '../memory/index.js';
 import { scoreThread } from './quality.js';
 import { generateSkillMd, extractSkillName } from './template.js';
 import bus from '../core/events.js';
+import { runConcernChecks } from '../proactive/index.js';
 
 const tracer = trace.getTracer('claudebot', '2.0.0');
 const SKILLS_DIR = process.env.CLAUDE_SKILLS_DIR ?? path.join(os.homedir(), '.claude', 'skills');
@@ -30,6 +32,14 @@ const SKILL_SIZE_LIMIT = 64 * 1024; // 64 KB (Reviewer Concern #6)
 // Lazily resolved send function — injected by scheduler
 let _sendAlert = null;
 export function setSendAlert(fn) { _sendAlert = fn; }
+
+// Platform senders injected by scheduler for concern checks
+let _platformSenders = {};
+let _sendOwnerAlert = null;
+export function setPlatformSenders(senders, ownerAlert) {
+  _platformSenders = senders || {};
+  _sendOwnerAlert = ownerAlert || null;
+}
 
 export async function reviewCandidates() {
   const db = getDb();
@@ -45,6 +55,7 @@ export async function reviewCandidates() {
 
   for (const thread of candidates) {
     await reviewThread(thread.user_id, thread.tool_use_total);
+    await runConcernChecks(thread.user_id, {}, _platformSenders, _sendOwnerAlert).catch(() => {});
   }
 }
 
@@ -100,9 +111,9 @@ export async function reviewThread(userId, toolUseTotal) {
       if (requiresConfirmation || confidenceScore < AUTO_KEEP_THRESHOLD) {
         // Pending — send confirmation request to owner
         db.prepare(`
-          INSERT INTO skills_generated (id, trigger_workflow, tool_use_count, skill_path, confidence_score, status, created_at)
-          VALUES (?, ?, ?, ?, ?, 'pending', ?)
-        `).run(skillId, workflowDesc.slice(0, 200), toolUseTotal, skillPath, confidenceScore, Date.now());
+          INSERT INTO skills_generated (id, trigger_workflow, tool_use_count, skill_path, confidence_score, status, content, created_at)
+          VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+        `).run(skillId, workflowDesc.slice(0, 200), toolUseTotal, skillPath, confidenceScore, skillMd, Date.now());
 
         await _sendAlert?.(
           `🧠 New skill candidate: **${skillName}** (confidence: ${(confidenceScore * 100).toFixed(0)}%)\n` +
@@ -115,9 +126,9 @@ export async function reviewThread(userId, toolUseTotal) {
         // Auto-keep — write immediately
         await writeSkill(skillDir, skillPath, skillMd);
         db.prepare(`
-          INSERT INTO skills_generated (id, trigger_workflow, tool_use_count, skill_path, confidence_score, status, created_at)
-          VALUES (?, ?, ?, ?, ?, 'auto-kept', ?)
-        `).run(skillId, workflowDesc.slice(0, 200), toolUseTotal, skillPath, confidenceScore, Date.now());
+          INSERT INTO skills_generated (id, trigger_workflow, tool_use_count, skill_path, confidence_score, status, content, created_at)
+          VALUES (?, ?, ?, ?, ?, 'auto-kept', ?, ?)
+        `).run(skillId, workflowDesc.slice(0, 200), toolUseTotal, skillPath, confidenceScore, skillMd, Date.now());
 
         bus.emit('skill:created', { name: skillName, path: skillDir });
         _incDreaming('auto_kept');
@@ -145,9 +156,21 @@ export async function approveSkill(skillId) {
   const row = db.prepare("SELECT * FROM skills_generated WHERE id = ? AND status = 'pending'").get(skillId);
   if (!row) return { ok: false, error: 'not found or already resolved' };
 
-  // Re-generate is not stored — fetch from DB (in a real impl, store the content)
-  // For now, mark approved without writing (content was shown in the confirmation DM)
   db.prepare("UPDATE skills_generated SET status = 'approved' WHERE id = ?").run(skillId);
+
+  // Write skill to disk from stored content
+  const skillRow = db.prepare('SELECT content, skill_path FROM skills_generated WHERE id = ?').get(skillId);
+  if (skillRow?.content && skillRow?.skill_path) {
+    try {
+      const skillDir = path.dirname(skillRow.skill_path);
+      await fsPromises.mkdir(skillDir, { recursive: true });
+      await fsPromises.writeFile(skillRow.skill_path, skillRow.content, 'utf8');
+      console.log(`[dreaming] approved skill written: ${skillRow.skill_path}`);
+    } catch (err) {
+      console.warn(`[dreaming] failed to write approved skill ${skillId}:`, err.message);
+    }
+  }
+
   _incDreaming('approved');
   return { ok: true };
 }

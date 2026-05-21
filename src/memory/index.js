@@ -359,6 +359,31 @@ export function cancelReminder(id, userId) {
 }
 
 /**
+ * Return all users opted in to proactive messaging.
+ * Reads preferences JSON from users table and platform identities from platform_ids.
+ * Returns [{ userId, prefs, platforms }]
+ */
+export function getProactiveUsers() {
+  if (!process.env.PROACTIVE_ENABLED) return [];
+  const db = getDb();
+  const rows = db.prepare('SELECT user_id, preferences FROM users').all();
+  const users = [];
+  for (const row of rows) {
+    let prefs = {};
+    try { prefs = JSON.parse(row.preferences ?? '{}'); } catch {}
+    // Skip users who have explicitly opted out
+    if (prefs.proactive === 'false' || prefs.proactive === false) continue;
+    const platformRows = db.prepare(
+      'SELECT platform, platform_id FROM platform_ids WHERE user_id = ?'
+    ).all(row.user_id);
+    const platforms = {};
+    for (const p of platformRows) platforms[p.platform] = p.platform_id;
+    users.push({ userId: row.user_id, prefs, platforms });
+  }
+  return users;
+}
+
+/**
  * Return all users that have a digest_time preference set, along with their
  * platform identities for delivery routing.
  * Returns [{ userId, preferences, platforms: [{ platform, platformId }] }]

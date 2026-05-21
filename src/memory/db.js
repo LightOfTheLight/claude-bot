@@ -13,7 +13,8 @@ const SCHEMA_V5 = 5; // reminders: add recur for recurring reminders
 const SCHEMA_V6 = 6; // message_log FTS5 virtual table for full-text search
 const SCHEMA_V7 = 7; // webhooks table
 const SCHEMA_V8 = 8; // traces table for persistent request trace storage
-const TARGET_VERSION = SCHEMA_V8;
+const SCHEMA_V9 = 9; // proactive_sends, proactive_feedback, skills_generated.content
+const TARGET_VERSION = SCHEMA_V9;
 
 let _db = null;
 
@@ -58,6 +59,9 @@ export async function initDb() {
   }
   if (version < SCHEMA_V8) {
     migrateV8(_db);
+  }
+  if (version < SCHEMA_V9) {
+    migrateV9(_db);
   }
 
   return _db;
@@ -308,4 +312,45 @@ function migrateV8(db) {
   `);
   db.pragma('user_version = 8');
   console.log('[db] schema v8 applied — traces');
+}
+
+// ─── V9: proactive layer ──────────────────────────────────────────────────────
+
+function migrateV9(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS proactive_sends (
+      id                  TEXT PRIMARY KEY,
+      user_id             TEXT NOT NULL,
+      kind                TEXT NOT NULL,
+      channel_id          TEXT,
+      message             TEXT NOT NULL,
+      sent_at             INTEGER NOT NULL,
+      template            TEXT,
+      confidence          REAL,
+      discord_message_id  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_proactive_sends_dedup ON proactive_sends(user_id, kind, sent_at);
+    CREATE INDEX IF NOT EXISTS idx_proactive_sends_discord_msg ON proactive_sends(discord_message_id);
+    CREATE TABLE IF NOT EXISTS proactive_feedback (
+      id          TEXT PRIMARY KEY,
+      send_id     TEXT NOT NULL REFERENCES proactive_sends(id),
+      user_id     TEXT NOT NULL,
+      rating      INTEGER NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+  `);
+
+  // ALTER TABLE may fail if column already exists (e.g. fresh DB with pre-V9 schema)
+  const cols = db.prepare("PRAGMA table_info(skills_generated)").all();
+  const hasContent = cols.some((c) => c.name === 'content');
+  if (!hasContent) {
+    try {
+      db.exec('ALTER TABLE skills_generated ADD COLUMN content TEXT;');
+    } catch (err) {
+      console.warn('[db] V9: could not add skills_generated.content:', err.message);
+    }
+  }
+
+  db.pragma('user_version = 9');
+  console.log('[db] schema v9 applied — proactive_sends, proactive_feedback, skills_generated.content');
 }

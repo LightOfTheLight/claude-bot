@@ -321,6 +321,7 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
     <div id="tab-nav">
       <button class="tab-btn active" data-tab="traces">Traces</button>
       <button class="tab-btn" data-tab="dreaming">Dreaming</button>
+      <button class="tab-btn" data-tab="proactive">Proactive</button>
     </div>
 
     <!-- Traces sidebar content -->
@@ -366,6 +367,24 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
         Runs hourly at <code style="color:var(--accent)">:30</code>. Needs
         <code style="color:var(--accent)">tool_use &gt; 5</code> +
         <code style="color:var(--accent)">idle &gt; 2h</code>.
+      </div>
+    </div>
+    <!-- Proactive sidebar content -->
+    <div id="proactive-sidebar-body" style="display:none;flex-direction:column;flex:1;overflow-y:auto;padding:12px 16px;gap:12px;">
+      <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600;padding-bottom:4px;">Proactive Sends</div>
+      <div class="dream-stat-grid">
+        <div class="dream-stat"><span class="ds-label">Total sends</span><span class="ds-value ds-accent" id="ps-total">–</span></div>
+        <div class="dream-stat"><span class="ds-label">With feedback</span><span class="ds-value ds-green" id="ps-feedback">–</span></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;font-weight:600;padding:8px 0 4px;">Next Fires (UTC)</div>
+      <div class="dream-stat-grid">
+        <div class="dream-stat" style="grid-column:1/-1"><span class="ds-label">🌅 Morning brief</span><span class="ds-value ds-accent" id="ps-next-morning">–</span></div>
+        <div class="dream-stat" style="grid-column:1/-1"><span class="ds-label">🌙 Nightly sync</span><span class="ds-value ds-accent" id="ps-next-night">–</span></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:8px;line-height:1.6;">
+        Enabled via <code style="color:var(--accent)">PROACTIVE_ENABLED=1</code>.<br>
+        Morning: <code style="color:var(--accent)">PROACTIVE_MORNING_HOUR</code> (default 7)<br>
+        Night: <code style="color:var(--accent)">PROACTIVE_NIGHT_HOUR</code> (default 21)
       </div>
     </div>
   </aside>
@@ -418,6 +437,34 @@ html, body { height: 100%; font-family: 'Segoe UI', system-ui, sans-serif; backg
             <tr><td colspan="4" style="color:var(--text-dim);text-align:center;padding:20px;">Loading…</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+  </main>
+
+  <!-- Proactive main panel -->
+  <main id="proactive-main" style="display:none;flex-direction:column;gap:18px;padding:20px 24px;overflow-y:auto;">
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+        </svg>
+        <h2>Recent Sends</h2>
+        <span id="proactive-refresh-badge" style="margin-left:auto;font-size:10px;padding:2px 7px;border-radius:10px;background:var(--green);color:#0f1117;font-weight:700;cursor:pointer;user-select:none">LIVE</span>
+      </div>
+      <div id="proactive-sends-list" style="max-height:380px;overflow-y:auto;">
+        <div style="padding:20px;text-align:center;color:var(--text-dim);font-size:12px;">Loading…</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M14 10h4.764a2 2 0 011.789 2.894l-3.5 7A2 2 0 0115.263 21h-4.017c-.163 0-.326-.02-.485-.06L7 20m7-10V5a2 2 0 00-2-2h-.095c-.5 0-.905.405-.905.905 0 .714-.211 1.412-.608 2.006L7 11v9m7-10h-2M7 20H5a2 2 0 01-2-2v-6a2 2 0 012-2h2.5"/>
+        </svg>
+        <h2>Feedback</h2>
+      </div>
+      <div id="proactive-feedback-list" style="max-height:280px;overflow-y:auto;">
+        <div style="padding:20px;text-align:center;color:var(--text-dim);font-size:12px;">Loading…</div>
       </div>
     </div>
   </main>
@@ -930,29 +977,42 @@ filterEl.addEventListener('change', renderList);
 let activeTab = 'traces';
 let dreamRefreshAuto = true;
 let dreamTimer = null;
+let proactiveRefreshAuto = true;
+let proactiveTimer = null;
 
 document.querySelectorAll('.tab-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     activeTab = btn.dataset.tab;
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b === btn));
 
-    const onTraces  = activeTab === 'traces';
-    const onDreaming = activeTab === 'dreaming';
+    const onTraces    = activeTab === 'traces';
+    const onDreaming  = activeTab === 'dreaming';
+    const onProactive = activeTab === 'proactive';
 
     // Sidebar content
-    document.getElementById('traces-sidebar-body').style.display = onTraces ? 'flex' : 'none';
-    document.getElementById('dream-sidebar-body').style.display  = onDreaming ? 'flex' : 'none';
-    if (onDreaming) document.getElementById('dream-sidebar-body').style.flexDirection = 'column';
+    document.getElementById('traces-sidebar-body').style.display    = onTraces ? 'flex' : 'none';
+    document.getElementById('dream-sidebar-body').style.display     = onDreaming ? 'flex' : 'none';
+    document.getElementById('proactive-sidebar-body').style.display = onProactive ? 'flex' : 'none';
+    if (onDreaming)  document.getElementById('dream-sidebar-body').style.flexDirection = 'column';
+    if (onProactive) document.getElementById('proactive-sidebar-body').style.flexDirection = 'column';
 
     // Main panel
-    document.getElementById('main').style.display       = onTraces ? 'flex' : 'none';
-    document.getElementById('dream-main').style.display = onDreaming ? 'flex' : 'none';
+    document.getElementById('main').style.display            = onTraces ? 'flex' : 'none';
+    document.getElementById('dream-main').style.display      = onDreaming ? 'flex' : 'none';
+    document.getElementById('proactive-main').style.display  = onProactive ? 'flex' : 'none';
 
     if (onDreaming) {
       pollDreaming();
       if (dreamRefreshAuto) dreamTimer = setInterval(pollDreaming, 5000);
     } else {
       clearInterval(dreamTimer);
+    }
+
+    if (onProactive) {
+      pollProactive();
+      if (proactiveRefreshAuto) proactiveTimer = setInterval(pollProactive, 10000);
+    } else {
+      clearInterval(proactiveTimer);
     }
   });
 });
@@ -1080,6 +1140,73 @@ document.getElementById('dream-refresh-badge').addEventListener('click', () => {
   badge.style.color = dreamRefreshAuto ? '#0f1117' : 'var(--text)';
   if (dreamRefreshAuto) dreamTimer = setInterval(pollDreaming, 5000);
   else clearInterval(dreamTimer);
+});
+
+/* ── Proactive API ── */
+async function pollProactive() {
+  try {
+    const data = await apiFetch('/api/proactive');
+    renderProactiveSidebar(data);
+    renderProactiveSends(data.sends);
+    renderProactiveFeedback(data.feedback);
+  } catch (e) { console.warn('proactive poll error', e); }
+}
+
+function renderProactiveSidebar(data) {
+  document.getElementById('ps-total').textContent    = data.sends?.length ?? 0;
+  document.getElementById('ps-feedback').textContent = data.feedback?.length ?? 0;
+  const fmt = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) + ' UTC' : '–';
+  document.getElementById('ps-next-morning').textContent = fmt(data.nextFires?.morning_brief);
+  document.getElementById('ps-next-night').textContent   = fmt(data.nextFires?.nightly_sync);
+}
+
+function renderProactiveSends(sends) {
+  const el = document.getElementById('proactive-sends-list');
+  if (!sends?.length) {
+    el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:12px;">No proactive sends yet. Enable with PROACTIVE_ENABLED=1.</div>';
+    return;
+  }
+  const kindColor = (k) => k === 'morning_brief' ? 'var(--yellow)' : k === 'nightly_sync' ? 'var(--purple)' : 'var(--accent)';
+  el.innerHTML = sends.map((s) => `
+    <div class="skill-row">
+      <div class="skill-info">
+        <div class="skill-name" style="color:${kindColor(s.kind)}">${esc(s.kind)}</div>
+        <div class="skill-wf" style="max-width:400px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.message?.slice(0, 120) ?? '')}</div>
+        <div class="skill-path">${esc((s.user_id ?? '').slice(0, 8))}… ${s.template ? '· ' + esc(s.template) : ''}</div>
+      </div>
+      <div class="skill-meta">
+        ${s.confidence != null ? `<span class="skill-ts">${Math.round(s.confidence * 100)}% conf</span>` : ''}
+        <span class="skill-ts">${tsShort(s.sent_at)}</span>
+      </div>
+    </div>`).join('');
+}
+
+function renderProactiveFeedback(feedback) {
+  const el = document.getElementById('proactive-feedback-list');
+  if (!feedback?.length) {
+    el.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-dim);font-size:12px;">No feedback yet. React with 👍/👎 on proactive messages.</div>';
+    return;
+  }
+  el.innerHTML = feedback.map((f) => `
+    <div class="skill-row">
+      <div class="skill-info">
+        <div class="skill-name">${f.rating > 0 ? '👍' : '👎'} <span style="color:var(--text-dim);font-size:11px;">${esc((f.user_id ?? '').slice(0, 8))}…</span></div>
+        <div class="skill-path">send: ${esc((f.send_id ?? '').slice(0, 8))}…</div>
+      </div>
+      <div class="skill-meta">
+        <span class="skill-ts">${tsShort(f.created_at)}</span>
+      </div>
+    </div>`).join('');
+}
+
+document.getElementById('proactive-refresh-badge').addEventListener('click', () => {
+  proactiveRefreshAuto = !proactiveRefreshAuto;
+  const badge = document.getElementById('proactive-refresh-badge');
+  badge.textContent = proactiveRefreshAuto ? 'LIVE' : 'PAUSED';
+  badge.style.background = proactiveRefreshAuto ? 'var(--green)' : 'var(--gray)';
+  badge.style.color = proactiveRefreshAuto ? '#0f1117' : 'var(--text)';
+  if (proactiveRefreshAuto) proactiveTimer = setInterval(pollProactive, 10000);
+  else clearInterval(proactiveTimer);
 });
 
 poll();

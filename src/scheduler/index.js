@@ -98,9 +98,23 @@ export function startScheduler({ sendOwnerAlert, platformSenders = {} }) {
     try {
       const dreaming = await import('../dreaming/index.js');
       dreaming.setSendAlert(sendOwnerAlert);
+      dreaming.setPlatformSenders(platformSenders, sendOwnerAlert);
       await dreaming.reviewCandidates();
     } catch {
       // Dreaming module not yet present — skip silently
+    }
+  });
+
+  // ── Proactive briefs every minute (hour-gated inside runScheduled) ───────────
+  cron.schedule('* * * * *', async () => {
+    try {
+      const proactive = await import('../proactive/index.js');
+      await proactive.runScheduled(platformSenders, sendOwnerAlert);
+    } catch (err) {
+      // Proactive module not present or env disabled — skip silently
+      if (process.env.PROACTIVE_ENABLED) {
+        console.warn('[scheduler] Proactive run failed:', err.message);
+      }
     }
   });
 

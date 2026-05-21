@@ -114,5 +114,45 @@ export function registerDashboardRoutes(app) {
     }
   });
 
-  console.log('[dashboard] Routes registered: GET /dashboard  GET /api/traces  GET /api/dreaming  GET /api/health');
+  // Proactive sends + feedback
+  app.get('/api/proactive', (req, res) => {
+    if (!auth(req, res)) return;
+    try {
+      const db = getDb();
+
+      const sends = db.prepare(
+        'SELECT * FROM proactive_sends ORDER BY sent_at DESC LIMIT 100'
+      ).all();
+
+      const feedback = db.prepare(
+        'SELECT * FROM proactive_feedback ORDER BY created_at DESC LIMIT 100'
+      ).all();
+
+      // Compute next fire times for morning_brief and nightly_sync (UTC, next occurrence)
+      const morningHour = parseInt(process.env.PROACTIVE_MORNING_HOUR || '7', 10);
+      const nightHour   = parseInt(process.env.PROACTIVE_NIGHT_HOUR   || '21', 10);
+
+      function nextFireISO(targetHour) {
+        const now = new Date();
+        const next = new Date(now);
+        next.setUTCMinutes(0, 0, 0);
+        next.setUTCHours(targetHour);
+        if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+        return next.toISOString();
+      }
+
+      res.json({
+        sends,
+        feedback,
+        nextFires: {
+          morning_brief: nextFireISO(morningHour),
+          nightly_sync:  nextFireISO(nightHour),
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  console.log('[dashboard] Routes registered: GET /dashboard  GET /api/traces  GET /api/dreaming  GET /api/proactive  GET /api/health');
 }

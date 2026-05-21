@@ -1,4 +1,5 @@
 import { Client, Events, GatewayIntentBits, Partials, AttachmentBuilder, InteractionType } from 'discord.js';
+import * as proactiveFeedback from '../proactive/feedback.js';
 import { registerSlashCommands } from '../discord/register.js';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -157,11 +158,11 @@ async function handleCommand(text, userId, platformId, platform, reply) {
   }
 
   if (lower === '/reset-context') {
-    await reply('Reset conversation context? Reply `yes` within 30s to confirm.');
-    return true; // confirmation handled in next message (simple approach: just proceed)
+    await reply('To confirm, run `/reset-context confirm`.');
+    return true;
   }
 
-  if (lower === 'yes' || lower === '/reset-context confirm') {
+  if (lower === '/reset-context confirm') {
     resetThread(userId);
     setBotState(`cli_session:${userId}`, '');
     clearRateLimit(userId);
@@ -1377,6 +1378,10 @@ export function start() {
     // Only react to reactions on bot's own messages
     if (reaction.message.author?.id !== client.user.id) return;
 
+    // Proactive feedback check — handle 👍/👎 on proactive sends before emoji-to-text routing
+    const matched = await proactiveFeedback.handleReaction(reaction.message.id, reaction.emoji.name, user.id);
+    if (matched) return;
+
     const emojiName = reaction.emoji.name;
     const text = EMOJI_TEXT[emojiName];
     if (!text) return; // unmapped emoji — ignore
@@ -1535,30 +1540,30 @@ export function start() {
       }
     },
 
-    /** Send a DM to any Discord user by their snowflake ID. */
+    /** Send a DM to any Discord user by their snowflake ID. Returns message.id on success, null on failure. */
     sendDM: async (discordUserId, text) => {
       try {
         const user = await client.users.fetch(discordUserId);
-        await user.send(text);
-        return true;
+        const msg = await user.send(text);
+        return msg.id;
       } catch (err) {
         console.warn(`[Discord] Failed to DM user ${discordUserId}:`, err.message);
-        return false;
+        return null;
       }
     },
 
-    /** Send a message to a specific channel by ID. */
+    /** Send a message to a specific channel by ID. Returns message.id on success, null on failure. */
     sendToChannel: async (channelId, text) => {
       try {
         const channel = await client.channels.fetch(channelId);
         if (channel?.isTextBased()) {
-          await channel.send(text);
-          return true;
+          const msg = await channel.send(text);
+          return msg.id;
         }
-        return false;
+        return null;
       } catch (err) {
         console.warn(`[Discord] Failed to send to channel ${channelId}:`, err.message);
-        return false;
+        return null;
       }
     },
   };
