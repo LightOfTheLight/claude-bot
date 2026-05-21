@@ -249,8 +249,11 @@ export async function callClaudeCLI({ messages, system, onChunk, onHeartbeat, se
   const makePrompt = (msgs, sys, overrideText) => {
     if (overrideText !== undefined) return overrideText;
     if (usingResume) {
-      // Resume mode: send only the latest user message — CLI has the rest
-      return msgs[msgs.length - 1].content + AUTONOMOUS_NOTE;
+      // Resume mode: send only the latest user message — CLI has the rest.
+      // Prepend system prompt so per-turn instructions (FILE tags, bot rules)
+      // are always visible even in resumed sessions.
+      const sysPrefix = sys ? `[System instructions]\n${sys}\n\n[User message]\n` : '';
+      return sysPrefix + msgs[msgs.length - 1].content + AUTONOMOUS_NOTE;
     }
     return buildPrompt(msgs, sys);
   };
