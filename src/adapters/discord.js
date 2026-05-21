@@ -3,7 +3,7 @@ import * as proactiveFeedback from '../proactive/feedback.js';
 import { registerSlashCommands } from '../discord/register.js';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { statSync } from 'node:fs';
-import { getAuthUrl, hasGDriveAuth, isOversized, uploadToDrive } from '../media/gdrive.js';
+import { getAuthUrl, hasGDriveAuth, isOversized, uploadToDrive, setUserFolder } from '../media/gdrive.js';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { isAudio, transcribeAudio } from '../media/transcribe.js';
@@ -785,7 +785,7 @@ async function handleCommand(text, userId, platformId, platform, reply, channelI
 
 // ─── Message pipeline ─────────────────────────────────────────────────────────
 
-async function handleMessage(text, platformId, platform, reply, sendTyping, { skipCommands = false, channelId = null, messageId = null } = {}) {
+async function handleMessage(text, platformId, platform, reply, sendTyping, { skipCommands = false, channelId = null, messageId = null, channelName = null } = {}) {
   return tracer.startActiveSpan('bot.message.receive', async (span) => {
     span.setAttribute('platform', platform);
 
@@ -1003,7 +1003,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
           for (const p of filePaths.filter((p) => existsSync(p))) {
             if (isOversized(p) && hasGDriveAuth(userId)) {
               try {
-                const link = await uploadToDrive(userId, p);
+                const link = await uploadToDrive(userId, p, channelName);
                 driveLinks.push(`📎 [${basename(p)}](${link}) *(uploaded to your Google Drive)*`);
               } catch (err) {
                 console.error('[gdrive] upload failed:', err.message);
@@ -1299,7 +1299,7 @@ async function catchUpMissedMessages(client) {
         'discord',
         (r) => lastDirected.reply(r),
         () => channel.sendTyping(),
-        { channelId: channel_id, messageId: lastDirected.id },
+        { channelId: channel_id, messageId: lastDirected.id, channelName: channel.name ?? null },
       );
     } catch (err) {
       console.warn(`[Discord] catch-up failed for channel ${channel_id}:`, err.message);
@@ -1436,7 +1436,7 @@ export function start() {
         'discord',
         trackedReply,
         () => typingChannel.sendTyping(),
-        { channelId: effectiveChannelId, messageId: message.id },
+        { channelId: effectiveChannelId, messageId: message.id, channelName: typingChannel.name ?? null },
       );
     } finally {
       _inFlight.delete(message.id);
@@ -1573,7 +1573,20 @@ export function start() {
         case 'set': {
           const key   = interaction.options.getString('key');
           const value = interaction.options.getString('value');
-          await handleCommand(`/set ${key} ${value}`, userId, platformId, 'discord', reply);
+          if (key === 'gdrive_folder') {
+            if (!hasGDriveAuth(userId)) {
+              await reply('Connect Google Drive first with `/auth_gdrive`, then set your folder.');
+            } else {
+              try {
+                await setUserFolder(userId, value);
+                await reply(`✅ Google Drive upload folder set to **${value}**. Files will go to \`${value} / [thread title] / file\`.`);
+              } catch (err) {
+                await reply(`Failed to set folder: ${err.message.slice(0, 200)}`);
+              }
+            }
+          } else {
+            await handleCommand(`/set ${key} ${value}`, userId, platformId, 'discord', reply);
+          }
           break;
         }
 

@@ -18,7 +18,8 @@ const SCHEMA_V10 = 10; // skill_invocations
 const SCHEMA_V11 = 11; // threads.channel_id for per-channel context isolation
 const SCHEMA_V12 = 12; // threads.channel_id NOT NULL + message_log.channel_id
 const SCHEMA_V13 = 13; // gdrive_tokens for per-user Google Drive OAuth
-const TARGET_VERSION = SCHEMA_V13;
+const SCHEMA_V14 = 14; // gdrive_tokens.folder_id for user-specified upload folder
+const TARGET_VERSION = SCHEMA_V14;
 
 let _db = null;
 
@@ -78,6 +79,9 @@ export async function initDb() {
   }
   if (version < SCHEMA_V13) {
     migrateV13(_db);
+  }
+  if (version < SCHEMA_V14) {
+    migrateV14(_db);
   }
 
   return _db;
@@ -463,4 +467,15 @@ function migrateV13(db) {
   `);
   db.pragma('user_version = 13');
   console.log('[db] schema v13 applied — gdrive_tokens');
+}
+
+// ─── V14: gdrive_tokens.folder_id ────────────────────────────────────────────
+
+function migrateV14(db) {
+  const cols = db.prepare('PRAGMA table_info(gdrive_tokens)').all().map((c) => c.name);
+  if (!cols.includes('folder_id')) {
+    db.exec('ALTER TABLE gdrive_tokens ADD COLUMN folder_id TEXT');
+  }
+  db.pragma('user_version = 14');
+  console.log('[db] schema v14 applied — gdrive_tokens.folder_id');
 }

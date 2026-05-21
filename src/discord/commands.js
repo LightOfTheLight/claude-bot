@@ -92,6 +92,7 @@ export const commandDefs = [
           { name: 'digest_time', value: 'digest_time' },
           { name: 'auto_thread', value: 'auto_thread' },
           { name: 'rate_limit', value: 'rate_limit' },
+          { name: 'gdrive_folder', value: 'gdrive_folder' },
         )
     )
     .addStringOption((opt) =>
