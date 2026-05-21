@@ -20,7 +20,7 @@
 **Effort:** M (human ~1 day / CC ~15 min)
 **Depends on:** Proactive infrastructure (this PR) must ship first. Decision needed: real invocation table vs. message_log keyword heuristic.
 
-### [ ] EMA threshold visibility in Proactive dashboard
+### [x] EMA threshold visibility in Proactive dashboard
 **What:** Add a "Current thresholds" panel to the Proactive tab in the dashboard showing the EMA value per template and feedback count from `proactive_feedback`.
 **Why:** Without this, the EMA threshold tuning is a black box. If a cold-start goes wrong (a few early 👎 collapse the threshold), there's no way to see it without querying the DB directly.
 **Where to start:** Extend `GET /api/proactive` to include `{ template, threshold, feedbackCount }[]` from `bot_state` + `proactive_feedback`. Surface in `dashboard.html` Proactive tab.

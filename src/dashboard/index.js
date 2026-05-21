@@ -141,9 +141,23 @@ export function registerDashboardRoutes(app) {
         return next.toISOString();
       }
 
+      // EMA thresholds per template from bot_state
+      const TEMPLATES = ['UNRESOLVED_THREAD', 'REPEATED_QUESTION', 'LONG_SILENCE', 'UNRESOLVED_INTENT'];
+      const thresholds = TEMPLATES.map((template) => {
+        const row = db.prepare('SELECT value FROM bot_state WHERE key = ?').get(`proactive_threshold_${template}`);
+        const threshold = row ? parseFloat(row.value) : 0.7;
+        const feedbackCount = db.prepare(
+          `SELECT COUNT(*) as n FROM proactive_feedback pf
+           JOIN proactive_sends ps ON ps.id = pf.send_id
+           WHERE ps.template = ?`
+        ).get(template)?.n ?? 0;
+        return { template, threshold, feedbackCount };
+      });
+
       res.json({
         sends,
         feedback,
+        thresholds,
         nextFires: {
           morning_brief: nextFireISO(morningHour),
           nightly_sync:  nextFireISO(nightHour),
