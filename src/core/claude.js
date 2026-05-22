@@ -140,18 +140,33 @@ function countToolUsesInSession(sessionId, sinceMs) {
 }
 
 /**
- * Return the session ID (UUID filename) of the most recently touched .jsonl
- * in the Claude Code project directory for CLAUDE_WORK_DIR.
- * Returns null if the directory is missing or empty.
+ * Return the session ID of the .jsonl file that was CREATED after `sinceMs`.
+ * Used for fresh (non-resume) calls to find the new session Claude Code just opened.
+ * Falls back to the most recently modified file created before sinceMs only when
+ * no new file is found (e.g., Claude reused an existing session).
+ * Returns null if the project directory is missing or empty.
  */
-function getNewestSessionId() {
+function getNewSessionId(sinceMs) {
   try {
     const projectDir = join(homedir(), '.claude', 'projects', workDirToSlug(CLAUDE_WORK_DIR));
-    const newest = readdirSync(projectDir)
+    const files = readdirSync(projectDir)
       .filter((f) => /^[0-9a-f-]{36}\.jsonl$/.test(f))
-      .map((f) => ({ id: f.slice(0, -6), mtime: statSync(join(projectDir, f)).mtimeMs }))
+      .map((f) => {
+        const s = statSync(join(projectDir, f));
+        return { id: f.slice(0, -6), mtime: s.mtimeMs, btime: s.birthtimeMs };
+      });
+
+    // Prefer a file born (created) after the call started
+    const newFile = files
+      .filter((f) => f.btime >= sinceMs)
+      .sort((a, b) => b.btime - a.btime)[0];
+    if (newFile) return newFile.id;
+
+    // Fallback: most recently modified file that was also modified after sinceMs
+    const modified = files
+      .filter((f) => f.mtime >= sinceMs)
       .sort((a, b) => b.mtime - a.mtime)[0];
-    return newest?.id ?? null;
+    return modified?.id ?? null;
   } catch {
     return null;
   }
@@ -311,17 +326,29 @@ export async function callClaudeCLI({ messages, system, onChunk, onHeartbeat, se
         console.warn(`[claude-cli] Resume failed (${err.message.slice(0, 80)}) — falling back to fresh start`);
         usingResume = false;
         currentSessionId = null;
+        const freshStartMs = Date.now();
         text = await spawnCLI(
           buildPrompt(currentMessages, system), cleanEnv,
           onChunk, onHeartbeat, null,
         );
+        // Find the newly created session from the fallback fresh call
+        const newId = getNewSessionId(freshStartMs);
+        if (newId) currentSessionId = newId;
       } else {
         throw err;
       }
     }
 
-    // Capture the session ID created/updated by this subprocess
-    currentSessionId = getNewestSessionId() ?? currentSessionId;
+    // Resolve the session ID for the call that just ran.
+    // - Resume mode: session is known; the JSONL was updated in place.
+    // - Fresh start: find the file that was *created* after callStartMs to
+    //   avoid picking up unrelated active sessions (e.g., an open Claude Code
+    //   IDE session whose mtime is always the newest).
+    if (!usingResume) {
+      const newId = getNewSessionId(callStartMs);
+      if (newId) currentSessionId = newId;
+    }
+    // (In resume mode currentSessionId is already the correct ID.)
 
     if (!isConfirmationPrompt(text) || attempt === MAX_AUTO_CONFIRMS) {
       const toolUseCount = currentSessionId
