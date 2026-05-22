@@ -58,6 +58,10 @@ const USE_GATEWAY = ALLOWED_PROVIDERS.has('anthropic') || ALLOWED_PROVIDERS.has(
 // Set in start() — allows handleCommand to use the client for broadcast
 let _client = null;
 
+// Per-user in-flight CLI lock: maps userId → true while a CLI call is running.
+// Prevents two concurrent messages from racing the same --resume session file.
+const _cliInFlight = new Set();
+
 
 // ─── Attachment downloader ────────────────────────────────────────────────────
 
@@ -934,8 +938,17 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
           let hasContent = false;
 
           const cliSessionKey = `cli_session:${userId}`;
-          const savedSessionId = getBotState(cliSessionKey) || undefined;
+          // If another message is already running a CLI call for this user,
+          // don't resume (would race the same session file and one would exit 1).
+          // Start fresh so this message gets its own clean session.
+          const concurrentCLI = _cliInFlight.has(userId);
+          const savedSessionId = concurrentCLI ? undefined : (getBotState(cliSessionKey) || undefined);
+          if (concurrentCLI) {
+            console.warn(`[claude-cli] concurrent call detected for ${userId} — skipping resume to avoid session race`);
+          }
+          _cliInFlight.add(userId);
 
+          const cliCallStart = Date.now();
           const result = await callClaudeCLI({
             messages: msgs,
             system,
@@ -953,9 +966,9 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
                 } catch {}
               }
             },
-            onHeartbeat: async (idleMs) => {
+            onHeartbeat: async () => {
               if (hasContent) return;
-              const secs = Math.round(idleMs / 1000);
+              const secs = Math.round((Date.now() - cliCallStart) / 1000);
               const indicator = `⏳ Still working… (${secs}s)`;
               try {
                 if (!liveMsg) liveMsg = await reply(indicator);
@@ -964,6 +977,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
             },
           });
 
+          _cliInFlight.delete(userId);
           if (result.sessionId) setBotState(cliSessionKey, result.sessionId);
 
           // ── Step 6: Tag extraction ─────────────────────────────────────────────
@@ -1119,6 +1133,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
         }
       } finally {
         clearInterval(typingInterval);
+        _cliInFlight.delete(userId); // ensure released even on error
       }
 
       recordStep(traceId, 'ai_call', {
