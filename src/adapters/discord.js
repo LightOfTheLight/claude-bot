@@ -1244,6 +1244,135 @@ async function sendReply(reply, text) {
   }
 }
 
+// ─── Regen helper ────────────────────────────────────────────────────────────
+
+/**
+ * Delete the last bot message in `channel`, remove the last assistant entry
+ * from message_log, re-run the AI with the preceding user message, and save
+ * the new response.  Creates a proper trace so the dashboard shows both the
+ * original response and the regenerated one as separate entries.
+ *
+ * @param {object} opts
+ * @param {object} opts.channel     Discord TextChannel / DMChannel
+ * @param {object} opts.botMessage  The Discord message to delete
+ * @param {string} opts.userId      Internal user ID (from getOrCreateUser)
+ * @param {string} opts.platformId  Discord user snowflake
+ * @param {string} opts.channelId   Discord channel ID
+ * @returns {Promise<{ok: boolean, text?: string, error?: string}>}
+ */
+async function runRegen({ channel, botMessage, userId, platformId, channelId }) {
+  const db = getDb();
+
+  // Find last user + assistant pair for this channel
+  const lastPair = db.prepare(
+    'SELECT role, content FROM message_log WHERE user_id = ? AND channel_id = ? ORDER BY id DESC LIMIT 2'
+  ).all(userId, channelId);
+
+  const lastUser = lastPair.find((m) => m.role === 'user');
+  if (!lastUser) return { ok: false, error: 'No previous user message found in this channel.' };
+
+  // Create a trace for the regen call
+  const traceId = createTrace({
+    platform: 'discord',
+    userId: platformId,
+    channelId,
+    messageId: botMessage.id,
+    preview: `[regen] ${lastUser.content.slice(0, 100)}`,
+  });
+  const regenStart = Date.now();
+
+  // Delete the bot message from Discord
+  await botMessage.delete().catch(() => {});
+
+  // Remove the last assistant entry from message_log + FTS
+  const lastAssistant = lastPair.find((m) => m.role === 'assistant');
+  if (lastAssistant) {
+    const row = db.prepare(
+      'SELECT id FROM message_log WHERE user_id = ? AND channel_id = ? AND role = ? ORDER BY id DESC LIMIT 1'
+    ).get(userId, channelId, 'assistant');
+    if (row) {
+      try { db.prepare("INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', ?, ?)").run(row.id, ''); } catch {}
+      db.prepare('DELETE FROM message_log WHERE id = ?').run(row.id);
+    }
+  }
+
+  // Fetch context and build prompt
+  const ctxStart = Date.now();
+  const { messages: history, summary, learnings } = getContext(userId, channelId);
+  const userPrefs = getAllPreferences(userId);
+  const timezone  = userPrefs.timezone ?? 'UTC';
+  const pins      = getPreference(userId, 'pins') ?? {};
+  const sys       = buildSystem(summary, learnings, timezone, pins);
+  const msgs      = [...history, { role: 'user', content: lastUser.content }];
+  recordStep(traceId, 'context_fetch', { status: 'ok', durationMs: Date.now() - ctxStart, meta: { historyLen: history.length } });
+
+  // Re-run AI
+  const { callClaudeCLI, callGateway } = await import('../core/claude.js');
+  const cliSessionKey    = `cli_session:${userId}:${channelId}`;
+  const savedSession     = getBotState(cliSessionKey) || undefined;
+  const indicator        = await channel.send('⏳ Regenerating…');
+  const aiStart          = Date.now();
+
+  let regenText = '';
+  let provider  = 'gateway';
+  let toolUseCount = 0;
+  try {
+    if (USE_CLI) {
+      provider = 'cli:regen';
+      const result = await callClaudeCLI({
+        messages: msgs, system: sys, sessionId: savedSession,
+        onChunk: async (chunk) => {
+          const preview = chunk.toString().slice(0, 100);
+          await indicator.edit(`⏳ Regenerating… ${preview}▌`).catch(() => {});
+        },
+      });
+      if (result.sessionId) setBotState(cliSessionKey, result.sessionId);
+      regenText    = result.text;
+      toolUseCount = result.toolUseCount ?? 0;
+    } else {
+      const result = await callGateway({ messages: msgs, system: sys });
+      regenText = result.text;
+    }
+  } catch (err) {
+    recordStep(traceId, 'ai_call', { status: 'error', durationMs: Date.now() - aiStart, meta: { error: err.message } });
+    finalizeTrace(traceId, { status: 'error', error: err.message });
+    await indicator.edit(`❌ Regen failed: ${err.message.slice(0, 200)}`).catch(() => {});
+    return { ok: false, error: err.message };
+  }
+
+  recordStep(traceId, 'ai_call', {
+    status: 'ok',
+    durationMs: Date.now() - aiStart,
+    meta: {
+      provider,
+      toolUses: toolUseCount,
+      responseLen: regenText.length,
+      response: regenText.slice(0, 200),
+      sessionId: getBotState(cliSessionKey) ?? null,
+      regen: true,
+    },
+  });
+
+  // Send the regenerated response
+  const deliveryStart = Date.now();
+  if (regenText.length <= 2000) {
+    await indicator.edit(regenText).catch(() => {});
+  } else {
+    await indicator.delete().catch(() => {});
+    await sendReply((t) => channel.send(t), regenText);
+  }
+  recordStep(traceId, 'delivery', { status: 'ok', durationMs: Date.now() - deliveryStart, meta: { chars: regenText.length } });
+
+  // Save to message_log
+  appendMessage(userId, { role: 'user',      content: lastUser.content, platform: 'discord', channelId });
+  appendMessage(userId, { role: 'assistant', content: regenText,         platform: 'discord', channelId });
+  recordStep(traceId, 'memory_persist', { status: 'ok', durationMs: 0, meta: {} });
+
+  finalizeTrace(traceId, { status: 'ok' });
+  console.log(`[Discord] regen completed for ${userId} in ${channelId} (trace ${traceId})`);
+  return { ok: true, text: regenText };
+}
+
 // ─── Catch-up on missed messages ─────────────────────────────────────────────
 
 /** Convert a JS timestamp (ms) to a Discord snowflake string for use as `after:` cursor. */
@@ -1501,82 +1630,11 @@ export function start() {
 
     // 👎 on a regular bot message → regenerate the response
     if (emojiName === '👎') {
-      const regenChannel = reaction.message.channel;
+      const regenChannel   = reaction.message.channel;
       const regenChannelId = regenChannel.id;
-      const regenUserId = getOrCreateUser('discord', user.id);
-
+      const regenUserId    = getOrCreateUser('discord', user.id);
       console.log(`[Discord] 👎 regen trigger from ${user.id} on msg ${reaction.message.id} in ${regenChannelId}`);
-
-      const regenDb = getDb();
-      const lastPair = regenDb.prepare(
-        'SELECT role, content FROM message_log WHERE user_id = ? AND channel_id = ? ORDER BY id DESC LIMIT 2'
-      ).all(regenUserId, regenChannelId);
-
-      const lastAssistant = lastPair.find((m) => m.role === 'assistant');
-      const lastUser      = lastPair.find((m) => m.role === 'user');
-      if (!lastUser) return; // no prior user message in this channel — nothing to regen
-
-      // Delete the bot message from Discord
-      await reaction.message.delete().catch(() => {});
-
-      // Remove last assistant entry from message_log + FTS
-      if (lastAssistant) {
-        const row = regenDb.prepare(
-          'SELECT id FROM message_log WHERE user_id = ? AND channel_id = ? AND role = ? ORDER BY id DESC LIMIT 1'
-        ).get(regenUserId, regenChannelId, 'assistant');
-        if (row) {
-          try { regenDb.prepare("INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', ?, ?)").run(row.id, ''); } catch {}
-          regenDb.prepare('DELETE FROM message_log WHERE id = ?').run(row.id);
-        }
-      }
-
-      // Re-run AI
-      const { callClaudeCLI: regenCLI, callGateway: regenGW } = await import('../core/claude.js');
-      const { messages: regenHistory, summary: regenSummary, learnings: regenLearnings } = getContext(regenUserId, regenChannelId);
-      const regenPrefs    = getAllPreferences(regenUserId);
-      const regenTimezone = regenPrefs.timezone ?? 'UTC';
-      const regenPins     = getPreference(regenUserId, 'pins') ?? {};
-      const regenSys      = buildSystem(regenSummary, regenLearnings, regenTimezone, regenPins);
-      const regenMsgs     = [...regenHistory, { role: 'user', content: lastUser.content }];
-
-      const regenSessionKey = `cli_session:${regenUserId}:${regenChannelId}`;
-      const regenSavedSession = getBotState(regenSessionKey) || undefined;
-      const regenIndicator = await regenChannel.send('⏳ Regenerating…');
-
-      let regenText = '';
-      try {
-        if (USE_CLI) {
-          const result = await regenCLI({
-            messages: regenMsgs, system: regenSys, sessionId: regenSavedSession,
-            onChunk: async (chunk) => {
-              const preview = chunk.toString().slice(0, 100);
-              await regenIndicator.edit(`⏳ Regenerating… ${preview}▌`).catch(() => {});
-            },
-          });
-          if (result.sessionId) setBotState(regenSessionKey, result.sessionId);
-          regenText = result.text;
-        } else {
-          const result = await regenGW({ messages: regenMsgs, system: regenSys });
-          regenText = result.text;
-        }
-      } catch (err) {
-        await regenIndicator.edit(`❌ Regen failed: ${err.message.slice(0, 200)}`).catch(() => {});
-        return;
-      }
-
-      // Send the regenerated response
-      if (regenText.length <= 2000) {
-        await regenIndicator.edit(regenText).catch(() => {});
-      } else {
-        await regenIndicator.delete().catch(() => {});
-        await sendReply((t) => regenChannel.send(t), regenText);
-      }
-
-      // Save to message_log
-      appendMessage(regenUserId, { role: 'user',      content: lastUser.content, platform: 'discord', channelId: regenChannelId });
-      appendMessage(regenUserId, { role: 'assistant', content: regenText,         platform: 'discord', channelId: regenChannelId });
-
-      console.log(`[Discord] 👎-regen completed for ${regenUserId} in ${regenChannelId}`);
+      await runRegen({ channel: regenChannel, botMessage: reaction.message, userId: regenUserId, platformId: user.id, channelId: regenChannelId });
       return;
     }
 
@@ -1741,91 +1799,25 @@ export function start() {
         }
 
         case 'regen': {
-          // 1. Fetch recent messages from this channel to find the last bot message
           const ch = interaction.channel;
           if (!ch) { await reply('Cannot access this channel.'); break; }
 
-          const fetched = await ch.messages.fetch({ limit: 20 });
+          const fetched    = await ch.messages.fetch({ limit: 20 });
           const lastBotMsg = fetched.find((m) => m.author.id === _client.user.id);
           if (!lastBotMsg) { await reply('No recent bot message found to regenerate.'); break; }
 
-          // 2. Find last user message + last assistant entry in message_log for this channel
-          const db = getDb();
-          const lastPair = db.prepare(
-            'SELECT role, content FROM message_log WHERE user_id = ? AND channel_id = ? ORDER BY id DESC LIMIT 2'
-          ).all(userId, channelId);
-
-          const lastAssistant = lastPair.find((m) => m.role === 'assistant');
-          const lastUser      = lastPair.find((m) => m.role === 'user');
-          if (!lastUser) { await reply('No previous user message found in this channel.'); break; }
-
           await interaction.deferReply({ ephemeral: true });
 
-          // 3. Delete last bot message from Discord
-          await lastBotMsg.delete().catch(() => {});
+          const result = await runRegen({
+            channel: ch, botMessage: lastBotMsg,
+            userId, platformId, channelId,
+          });
 
-          // 4. Remove last assistant entry from message_log + FTS
-          if (lastAssistant) {
-            const row = db.prepare(
-              'SELECT id FROM message_log WHERE user_id = ? AND channel_id = ? AND role = ? ORDER BY id DESC LIMIT 1'
-            ).get(userId, channelId, 'assistant');
-            if (row) {
-              try { db.prepare("INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', ?, ?)").run(row.id, ''); } catch {}
-              db.prepare('DELETE FROM message_log WHERE id = ?').run(row.id);
-            }
-          }
-
-          // 5. Re-run AI with the last user message
-          const { callClaudeCLI, callGateway } = await import('../core/claude.js');
-          const { messages: history, summary, learnings } = getContext(userId, channelId);
-          const userPrefs = getAllPreferences(userId);
-          const timezone = userPrefs.timezone ?? 'UTC';
-          const pins = getPreference(userId, 'pins') ?? {};
-
-          // Rebuild system + message list
-          const sys = buildSystem(summary, learnings, timezone, pins);
-          const msgs = [...history, { role: 'user', content: lastUser.content }];
-
-          let regenText = '';
-          const cliSessionKey = `cli_session:${userId}:${channelId}`;
-          const savedSession  = getBotState(cliSessionKey) || undefined;
-          const liveIndicator = await ch.send('⏳ Regenerating…');
-
-          try {
-            if (USE_CLI) {
-              const result = await callClaudeCLI({
-                messages: msgs, system: sys, sessionId: savedSession,
-                onChunk: async (chunk) => {
-                  const preview = chunk.toString().slice(0, 100);
-                  await liveIndicator.edit(`⏳ Regenerating… ${preview}▌`).catch(() => {});
-                },
-              });
-              if (result.sessionId) setBotState(cliSessionKey, result.sessionId);
-              regenText = result.text;
-            } else {
-              const result = await callGateway({ messages: msgs, system: sys });
-              regenText = result.text;
-            }
-          } catch (err) {
-            await liveIndicator.edit(`❌ Regen failed: ${err.message.slice(0, 200)}`).catch(() => {});
-            await interaction.editReply('Regeneration failed.').catch(() => {});
-            break;
-          }
-
-          // 6. Send regenerated response, replacing the indicator
-          if (regenText.length <= 2000) {
-            await liveIndicator.edit(regenText).catch(() => {});
+          if (result.ok) {
+            await interaction.editReply('↩️ Response regenerated.').catch(() => {});
           } else {
-            await liveIndicator.delete().catch(() => {});
-            await sendReply((t) => ch.send(t), regenText);
+            await interaction.editReply(`❌ ${result.error ?? 'Regen failed.'}`).catch(() => {});
           }
-
-          // 7. Save to message_log
-          appendMessage(userId, { role: 'user',      content: lastUser.content, platform: 'discord', channelId });
-          appendMessage(userId, { role: 'assistant', content: regenText,         platform: 'discord', channelId });
-
-          await interaction.editReply('↩️ Response regenerated.').catch(() => {});
-          console.log(`[Discord] /regen completed for ${userId} in ${channelId}`);
           break;
         }
 
