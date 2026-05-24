@@ -168,5 +168,22 @@ export function registerDashboardRoutes(app) {
     }
   });
 
-  console.log('[dashboard] Routes registered: GET /dashboard  GET /api/traces  GET /api/dreaming  GET /api/proactive  GET /api/health');
+  // Triggers list
+  app.get('/api/triggers', (req, res) => {
+    if (!auth(req, res)) return;
+    try {
+      const db = getDb();
+      const triggers = db.prepare(`
+        SELECT t.*, u.user_id as owner_user_id
+        FROM triggers t
+        LEFT JOIN users u ON u.user_id = t.user_id
+        ORDER BY t.created_at DESC
+      `).all();
+      res.json({ triggers });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  console.log('[dashboard] Routes registered: GET /dashboard  GET /api/traces  GET /api/dreaming  GET /api/proactive  GET /api/triggers  GET /api/health');
 }
