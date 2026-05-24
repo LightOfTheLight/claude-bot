@@ -1238,8 +1238,17 @@ async function sendReply(reply, text) {
   if (text.length <= 2000) {
     await reply(text);
   } else {
+    // Send first chunk via reply (keeps the quote chain to the user message),
+    // then thread subsequent chunks as replies to the first chunk so the
+    // continuation is visually attached instead of re-quoting the user message.
+    let firstMsg = null;
     for (let i = 0; i < text.length; i += 1900) {
-      await reply(text.slice(i, i + 1900));
+      const chunk = text.slice(i, i + 1900);
+      if (!firstMsg) {
+        firstMsg = await reply(chunk);
+      } else {
+        await firstMsg.reply(chunk).catch(() => reply(chunk));
+      }
     }
   }
 }
