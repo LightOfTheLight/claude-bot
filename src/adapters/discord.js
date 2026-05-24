@@ -171,7 +171,7 @@ async function handleCommand(text, userId, platformId, platform, reply, channelI
 
   if (lower === '/reset-context confirm') {
     resetThread(userId, channelId);
-    setBotState(`cli_session:${userId}`, '');
+    setBotState(`cli_session:${userId}:${channelId}`, '');
     clearRateLimit(userId);
     await reply('Context reset. Starting fresh.');
     return true;
@@ -937,16 +937,19 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
           let lastEdit = 0;
           let hasContent = false;
 
-          const cliSessionKey = `cli_session:${userId}`;
-          // If another message is already running a CLI call for this user,
+          // Session key is per-user-per-channel so each thread keeps its own
+          // CLI session and context — different threads never share a session.
+          const cliSessionKey = `cli_session:${userId}:${channelId}`;
+          const cliLockKey    = `${userId}:${channelId}`;
+          // If another message is already running a CLI call for this channel,
           // don't resume (would race the same session file and one would exit 1).
           // Start fresh so this message gets its own clean session.
-          const concurrentCLI = _cliInFlight.has(userId);
+          const concurrentCLI = _cliInFlight.has(cliLockKey);
           const savedSessionId = concurrentCLI ? undefined : (getBotState(cliSessionKey) || undefined);
           if (concurrentCLI) {
-            console.warn(`[claude-cli] concurrent call detected for ${userId} — skipping resume to avoid session race`);
+            console.warn(`[claude-cli] concurrent call detected for ${cliLockKey} — skipping resume to avoid session race`);
           }
-          _cliInFlight.add(userId);
+          _cliInFlight.add(cliLockKey);
 
           const cliCallStart = Date.now();
           const result = await callClaudeCLI({
@@ -977,7 +980,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
             },
           });
 
-          _cliInFlight.delete(userId);
+          _cliInFlight.delete(cliLockKey);
           if (result.sessionId) setBotState(cliSessionKey, result.sessionId);
 
           // ── Step 6: Tag extraction ─────────────────────────────────────────────
@@ -1133,7 +1136,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
         }
       } finally {
         clearInterval(typingInterval);
-        _cliInFlight.delete(userId); // ensure released even on error
+        if (typeof cliLockKey !== 'undefined') _cliInFlight.delete(cliLockKey); // ensure released even on error
       }
 
       recordStep(traceId, 'ai_call', {
@@ -1144,7 +1147,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
           responseLen: responseText?.length ?? 0,
           request: text.slice(0, 500),
           response: (responseText ?? '').slice(0, 500),
-          sessionId: getBotState(`cli_session:${userId}`) || null,
+          sessionId: getBotState(`cli_session:${userId}:${channelId}`) || null,
         },
       });
 
