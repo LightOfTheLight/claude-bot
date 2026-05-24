@@ -129,7 +129,10 @@ function countToolUsesInSession(sessionId, sinceMs) {
         const entryTs = obj.timestamp ? new Date(obj.timestamp) : null;
         if (entryTs && entryTs < sinceDate) continue;
         for (const c of (obj.message?.content ?? [])) {
-          if (c?.type === 'tool_use') names.push(c.name ?? 'unknown');
+          if (c?.type === 'tool_use') {
+            const label = c.input?.action ? `${c.name}:${c.input.action}` : (c.name ?? 'unknown');
+            names.push(label);
+          }
         }
       } catch { /* skip malformed lines */ }
     }
