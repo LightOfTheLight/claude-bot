@@ -1498,6 +1498,88 @@ export function start() {
     if (matched) return;
 
     const emojiName = reaction.emoji.name;
+
+    // 👎 on a regular bot message → regenerate the response
+    if (emojiName === '👎') {
+      const regenChannel = reaction.message.channel;
+      const regenChannelId = regenChannel.id;
+      const regenUserId = getOrCreateUser('discord', user.id);
+
+      console.log(`[Discord] 👎 regen trigger from ${user.id} on msg ${reaction.message.id} in ${regenChannelId}`);
+
+      const regenDb = getDb();
+      const lastPair = regenDb.prepare(
+        'SELECT role, content FROM message_log WHERE user_id = ? AND channel_id = ? ORDER BY id DESC LIMIT 2'
+      ).all(regenUserId, regenChannelId);
+
+      const lastAssistant = lastPair.find((m) => m.role === 'assistant');
+      const lastUser      = lastPair.find((m) => m.role === 'user');
+      if (!lastUser) return; // no prior user message in this channel — nothing to regen
+
+      // Delete the bot message from Discord
+      await reaction.message.delete().catch(() => {});
+
+      // Remove last assistant entry from message_log + FTS
+      if (lastAssistant) {
+        const row = regenDb.prepare(
+          'SELECT id FROM message_log WHERE user_id = ? AND channel_id = ? AND role = ? ORDER BY id DESC LIMIT 1'
+        ).get(regenUserId, regenChannelId, 'assistant');
+        if (row) {
+          try { regenDb.prepare("INSERT INTO message_fts(message_fts, rowid, content) VALUES ('delete', ?, ?)").run(row.id, ''); } catch {}
+          regenDb.prepare('DELETE FROM message_log WHERE id = ?').run(row.id);
+        }
+      }
+
+      // Re-run AI
+      const { callClaudeCLI: regenCLI, callGateway: regenGW } = await import('../core/claude.js');
+      const { messages: regenHistory, summary: regenSummary, learnings: regenLearnings } = getContext(regenUserId, regenChannelId);
+      const regenPrefs    = getAllPreferences(regenUserId);
+      const regenTimezone = regenPrefs.timezone ?? 'UTC';
+      const regenPins     = getPreference(regenUserId, 'pins') ?? {};
+      const regenSys      = buildSystem(regenSummary, regenLearnings, regenTimezone, regenPins);
+      const regenMsgs     = [...regenHistory, { role: 'user', content: lastUser.content }];
+
+      const regenSessionKey = `cli_session:${regenUserId}:${regenChannelId}`;
+      const regenSavedSession = getBotState(regenSessionKey) || undefined;
+      const regenIndicator = await regenChannel.send('⏳ Regenerating…');
+
+      let regenText = '';
+      try {
+        if (USE_CLI) {
+          const result = await regenCLI({
+            messages: regenMsgs, system: regenSys, sessionId: regenSavedSession,
+            onChunk: async (chunk) => {
+              const preview = chunk.toString().slice(0, 100);
+              await regenIndicator.edit(`⏳ Regenerating… ${preview}▌`).catch(() => {});
+            },
+          });
+          if (result.sessionId) setBotState(regenSessionKey, result.sessionId);
+          regenText = result.text;
+        } else {
+          const result = await regenGW({ messages: regenMsgs, system: regenSys });
+          regenText = result.text;
+        }
+      } catch (err) {
+        await regenIndicator.edit(`❌ Regen failed: ${err.message.slice(0, 200)}`).catch(() => {});
+        return;
+      }
+
+      // Send the regenerated response
+      if (regenText.length <= 2000) {
+        await regenIndicator.edit(regenText).catch(() => {});
+      } else {
+        await regenIndicator.delete().catch(() => {});
+        await sendReply((t) => regenChannel.send(t), regenText);
+      }
+
+      // Save to message_log
+      appendMessage(regenUserId, { role: 'user',      content: lastUser.content, platform: 'discord', channelId: regenChannelId });
+      appendMessage(regenUserId, { role: 'assistant', content: regenText,         platform: 'discord', channelId: regenChannelId });
+
+      console.log(`[Discord] 👎-regen completed for ${regenUserId} in ${regenChannelId}`);
+      return;
+    }
+
     const text = EMOJI_TEXT[emojiName];
     if (!text) return; // unmapped emoji — ignore
 
