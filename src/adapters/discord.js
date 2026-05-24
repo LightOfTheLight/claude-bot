@@ -1399,7 +1399,9 @@ async function catchUpMissedMessages(client) {
   if (!lastOnline) return; // first boot — nothing to catch up
 
   const since = parseInt(lastOnline, 10);
-  const afterSnowflake = timestampToSnowflake(since);
+  // Subtract 1ms so the Discord `after:` fetch (exclusive) includes any message
+  // whose createdTimestamp equals `since` (the last message we received before shutdown).
+  const afterSnowflake = timestampToSnowflake(since - 1);
   const channels = getActiveChannels('discord');
 
   console.log(`[Discord] catch-up: scanning ${channels.length} channel(s) for messages since ${new Date(since).toISOString()}`);
@@ -1544,8 +1546,10 @@ export function start() {
 
     // Track this channel so catch-up knows where to look on next restart
     trackChannel('discord', message.channel.id, message.guild?.id ?? null);
-    // Heartbeat: record we were alive at this moment
-    setBotState('lastOnline', String(Date.now()));
+    // Heartbeat: record the Discord message timestamp so catch-up's `after:`
+    // query starts from this message — not from Date.now() which lands a few
+    // ms ahead of the message and causes it to be missed on restart.
+    setBotState('lastOnline', String(message.createdTimestamp));
 
     // ── Auto-thread: start a thread for guild-channel mentions ────────────────
     let replyFn = (r) => message.reply(r); // default: reply in the channel
