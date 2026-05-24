@@ -119,7 +119,7 @@ function countToolUsesInSession(sessionId, sinceMs) {
     const projectDir = join(homedir(), '.claude', 'projects', workDirToSlug(CLAUDE_WORK_DIR));
     const filePath = join(projectDir, `${sessionId}.jsonl`);
     const lines = readFileSync(filePath, 'utf8').split('\n');
-    let count = 0;
+    const names = [];
     const sinceDate = new Date(sinceMs);
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -129,13 +129,13 @@ function countToolUsesInSession(sessionId, sinceMs) {
         const entryTs = obj.timestamp ? new Date(obj.timestamp) : null;
         if (entryTs && entryTs < sinceDate) continue;
         for (const c of (obj.message?.content ?? [])) {
-          if (c?.type === 'tool_use') count++;
+          if (c?.type === 'tool_use') names.push(c.name ?? 'unknown');
         }
       } catch { /* skip malformed lines */ }
     }
-    return count;
+    return { count: names.length, names };
   } catch {
-    return 0;
+    return { count: 0, names: [] };
   }
 }
 
@@ -351,10 +351,10 @@ export async function callClaudeCLI({ messages, system, onChunk, onHeartbeat, se
     // (In resume mode currentSessionId is already the correct ID.)
 
     if (!isConfirmationPrompt(text) || attempt === MAX_AUTO_CONFIRMS) {
-      const toolUseCount = currentSessionId
+      const toolResult = currentSessionId
         ? countToolUsesInSession(currentSessionId, callStartMs)
-        : 0;
-      return { text, toolCalls: [], toolUseCount, sessionId: currentSessionId };
+        : { count: 0, names: [] };
+      return { text, toolCalls: [], toolUseCount: toolResult.count, toolNames: toolResult.names, sessionId: currentSessionId };
     }
 
     console.log(`[claude-cli] Auto-confirming (attempt ${attempt + 1}): "${text.slice(-80)}"`);

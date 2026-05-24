@@ -514,6 +514,9 @@ let traces = [], selectedId = null, autoRefresh = true, pollTimer = null;
 // History cache: avoids embedding raw JSON in HTML attributes
 const _historyCache = [];
 
+// Tools cache: same pattern for tool name lists
+const _toolsCache = [];
+
 const listEl    = document.getElementById('trace-list');
 const detailEl  = document.getElementById('detail');
 const emptyEl   = document.getElementById('empty-state');
@@ -693,7 +696,16 @@ function renderStepBody(name, meta) {
           <div class="step-stats">
             <div class="step-stat"><span class="sk">Provider</span><span class="sv">${provBadge}</span></div>
             ${stat('Response Len', m.responseLen != null ? m.responseLen + ' chars' : null)}
-            ${stat('Tool Uses',    m.toolUseCount)}
+            ${(() => {
+              const count = m.toolUseCount;
+              if (!count) return stat('Tool Uses', count);
+              const names = m.toolNames;
+              if (!names?.length) return stat('Tool Uses', count);
+              if (_toolsCache.length > 400) _toolsCache.splice(0, 200);
+              const tidx = _toolsCache.length;
+              _toolsCache.push(names);
+              return `<div class="step-stat"><span class="sk">Tool Uses</span><span class="sv"><span class="hist-len-link" data-tidx="${tidx}" data-count="${count}">${count}</span></span></div>`;
+            })()}
             ${m.sessionId && m.sessionId !== 'null' ? stat('Session', m.sessionId.toString().slice(0, 18) + '…') : ''}
           </div>
         </div>
@@ -987,9 +999,33 @@ document.getElementById('detail').addEventListener('click', (e) => {
   if (!link) return;
   const idx     = parseInt(link.dataset.hidx, 10);
   const count   = parseInt(link.dataset.count, 10);
-  const history = _historyCache[idx];
-  if (history) openHistoryModal(history, count);
+  if (!isNaN(idx) && link.dataset.tidx == null) {
+    const history = _historyCache[idx];
+    if (history) openHistoryModal(history, count);
+  } else if (link.dataset.tidx != null) {
+    const tidx  = parseInt(link.dataset.tidx, 10);
+    const names = _toolsCache[tidx];
+    if (names) openToolsModal(names, count);
+  }
 });
+
+function openToolsModal(names, count) {
+  const modalTitle = document.getElementById('modal-title');
+  const modalBody  = document.getElementById('modal-body');
+  const modalOverlay = document.getElementById('modal-overlay');
+  modalTitle.textContent = `Tool Uses (${count})`;
+  // Tally occurrences
+  const tally = {};
+  for (const n of names) tally[n] = (tally[n] ?? 0) + 1;
+  const sorted = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+  modalBody.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:8px;padding:8px 0">` +
+    sorted.map(([name, cnt]) =>
+      `<span style="background:var(--surface2);border-radius:4px;padding:4px 10px;font-size:13px;font-family:'Consolas','Courier New',monospace;">` +
+      `${esc(name)}<span style="color:var(--text-dim);margin-left:6px;">×${cnt}</span></span>`
+    ).join('') +
+  `</div>`;
+  modalOverlay.classList.add('open');
+}
 
 autoBadge.addEventListener('click', () => {
   autoRefresh = !autoRefresh;

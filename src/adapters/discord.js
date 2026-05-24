@@ -924,6 +924,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
       const msgs = [...history, { role: 'user', content: text }];
       let responseText;
       let toolUseCount = 0;
+      let toolNames = [];
       let provider = 'none';
 
       const typingInterval = setInterval(() => sendTyping().catch(() => {}), 8000);
@@ -983,6 +984,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
           _cliInFlight.delete(cliLockKey);
           if (result.sessionId) setBotState(cliSessionKey, result.sessionId);
           toolUseCount = result.toolUseCount ?? 0;
+          toolNames = result.toolNames ?? [];
 
           // ── Step 6: Tag extraction ─────────────────────────────────────────────
           const t5 = Date.now();
@@ -1145,6 +1147,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
         meta: {
           provider,
           toolUseCount,
+          toolNames,
           responseLen: responseText?.length ?? 0,
           request: text.slice(0, 500),
           response: (responseText ?? '').slice(0, 500),
@@ -1326,6 +1329,7 @@ async function runRegen({ channel, botMessage, userId, platformId, channelId }) 
   let regenText = '';
   let provider  = 'gateway';
   let toolUseCount = 0;
+  let regenToolNames = [];
   try {
     if (USE_CLI) {
       provider = 'cli:regen';
@@ -1337,8 +1341,9 @@ async function runRegen({ channel, botMessage, userId, platformId, channelId }) 
         },
       });
       if (result.sessionId) setBotState(cliSessionKey, result.sessionId);
-      regenText    = result.text;
-      toolUseCount = result.toolUseCount ?? 0;
+      regenText       = result.text;
+      toolUseCount    = result.toolUseCount ?? 0;
+      regenToolNames  = result.toolNames ?? [];
     } else {
       const result = await callGateway({ messages: msgs, system: sys });
       regenText = result.text;
@@ -1355,7 +1360,8 @@ async function runRegen({ channel, botMessage, userId, platformId, channelId }) 
     durationMs: Date.now() - aiStart,
     meta: {
       provider,
-      toolUses: toolUseCount,
+      toolUseCount,
+      toolNames: regenToolNames,
       responseLen: regenText.length,
       response: regenText.slice(0, 200),
       sessionId: getBotState(cliSessionKey) ?? null,
