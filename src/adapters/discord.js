@@ -982,6 +982,7 @@ async function handleMessage(text, platformId, platform, reply, sendTyping, { sk
 
           _cliInFlight.delete(cliLockKey);
           if (result.sessionId) setBotState(cliSessionKey, result.sessionId);
+          toolUseCount = result.toolUseCount ?? 0;
 
           // ── Step 6: Tag extraction ─────────────────────────────────────────────
           const t5 = Date.now();
