@@ -171,6 +171,15 @@ app.listen(PORT, async () => {
     // Scheduler module not yet present (Week 1/2) — skip silently
   }
 
+  // Load scheduled triggers
+  try {
+    const { loadScheduledTriggers, setTriggerContext } = await import('./triggers/index.js');
+    setTriggerContext(platformSenders, sendOwnerAlert);
+    loadScheduledTriggers();
+  } catch (err) {
+    console.warn('[index] Triggers init failed:', err.message);
+  }
+
   // Register webhook routes
   try {
     const { registerWebhookRoutes } = await import('./webhooks/index.js');

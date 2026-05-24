@@ -651,3 +651,44 @@ export function recordSkillInvocation(userId, skillName) {
     'INSERT INTO skill_invocations (id, user_id, skill_name, invoked_at) VALUES (?, ?, ?, ?)'
   ).run(crypto.randomUUID(), userId, skillName, Date.now());
 }
+
+// ─── Triggers ─────────────────────────────────────────────────────────────────
+
+export function createTrigger(userId, { name, prompt, schedule, channelId, platform = 'discord' }) {
+  const id = crypto.randomUUID().slice(0, 8);
+  getDb().prepare(
+    `INSERT INTO triggers (id, user_id, name, prompt, schedule, channel_id, platform, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, userId, name, prompt, schedule ?? null, channelId ?? null, platform, Date.now());
+  return id;
+}
+
+export function listTriggers(userId) {
+  return getDb().prepare(
+    'SELECT * FROM triggers WHERE user_id = ? ORDER BY created_at DESC'
+  ).all(userId);
+}
+
+export function getTriggerById(id) {
+  return getDb().prepare('SELECT * FROM triggers WHERE id = ?').get(id);
+}
+
+export function getTriggerByName(userId, name) {
+  return getDb().prepare('SELECT * FROM triggers WHERE user_id = ? AND name = ?').get(userId, name);
+}
+
+export function deleteTrigger(id, userId) {
+  return getDb().prepare('DELETE FROM triggers WHERE id = ? AND user_id = ?').run(id, userId).changes > 0;
+}
+
+export function toggleTrigger(id, userId, enabled) {
+  return getDb().prepare('UPDATE triggers SET enabled = ? WHERE id = ? AND user_id = ?').run(enabled ? 1 : 0, id, userId).changes > 0;
+}
+
+export function recordTriggerRun(id) {
+  getDb().prepare('UPDATE triggers SET last_run = ?, run_count = run_count + 1 WHERE id = ?').run(Date.now(), id);
+}
+
+export function getAllScheduledTriggers() {
+  return getDb().prepare('SELECT * FROM triggers WHERE schedule IS NOT NULL AND enabled = 1').all();
+}

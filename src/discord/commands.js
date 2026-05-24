@@ -148,4 +148,52 @@ export const commandDefs = [
   new SlashCommandBuilder()
     .setName('regen')
     .setDescription('Delete the last bot response and regenerate it'),
+
+  new SlashCommandBuilder()
+    .setName('trigger')
+    .setDescription('Manage saved prompt triggers')
+    .addSubcommand((sub) =>
+      sub.setName('create')
+        .setDescription('Create a new trigger')
+        .addStringOption((opt) =>
+          opt.setName('name').setDescription('Short name (e.g. standup, digest)').setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt.setName('prompt').setDescription('The prompt to run').setRequired(true)
+        )
+        .addStringOption((opt) =>
+          opt.setName('schedule').setDescription('Cron expression (e.g. "0 9 * * 1-5") — omit for manual only')
+        )
+    )
+    .addSubcommand((sub) =>
+      sub.setName('list').setDescription('List your triggers')
+    )
+    .addSubcommand((sub) =>
+      sub.setName('run')
+        .setDescription('Run a trigger immediately')
+        .addStringOption((opt) =>
+          opt.setName('id').setDescription('Trigger ID (from /trigger list)').setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub.setName('delete')
+        .setDescription('Delete a trigger')
+        .addStringOption((opt) =>
+          opt.setName('id').setDescription('Trigger ID (from /trigger list)').setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub.setName('enable')
+        .setDescription('Enable a disabled trigger')
+        .addStringOption((opt) =>
+          opt.setName('id').setDescription('Trigger ID').setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub.setName('disable')
+        .setDescription('Disable a trigger without deleting it')
+        .addStringOption((opt) =>
+          opt.setName('id').setDescription('Trigger ID').setRequired(true)
+        )
+    ),
 ].map((cmd) => cmd.toJSON());

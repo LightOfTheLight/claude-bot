@@ -19,7 +19,8 @@ const SCHEMA_V11 = 11; // threads.channel_id for per-channel context isolation
 const SCHEMA_V12 = 12; // threads.channel_id NOT NULL + message_log.channel_id
 const SCHEMA_V13 = 13; // gdrive_tokens for per-user Google Drive OAuth
 const SCHEMA_V14 = 14; // gdrive_tokens.folder_id for user-specified upload folder
-const TARGET_VERSION = SCHEMA_V14;
+const SCHEMA_V15 = 15; // triggers table — local provider-agnostic saved prompts
+const TARGET_VERSION = SCHEMA_V15;
 
 let _db = null;
 
@@ -82,6 +83,9 @@ export async function initDb() {
   }
   if (version < SCHEMA_V14) {
     migrateV14(_db);
+  }
+  if (version < SCHEMA_V15) {
+    migrateV15(_db);
   }
 
   return _db;
@@ -467,6 +471,30 @@ function migrateV13(db) {
   `);
   db.pragma('user_version = 13');
   console.log('[db] schema v13 applied — gdrive_tokens');
+}
+
+// ─── V15: triggers table ──────────────────────────────────────────────────────
+
+function migrateV15(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS triggers (
+      id         TEXT    PRIMARY KEY,
+      user_id    TEXT    NOT NULL REFERENCES users(user_id),
+      name       TEXT    NOT NULL,
+      prompt     TEXT    NOT NULL,
+      schedule   TEXT,
+      channel_id TEXT,
+      platform   TEXT    NOT NULL DEFAULT 'discord',
+      enabled    INTEGER NOT NULL DEFAULT 1,
+      last_run   INTEGER,
+      run_count  INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS triggers_user_idx     ON triggers(user_id);
+    CREATE INDEX IF NOT EXISTS triggers_schedule_idx ON triggers(enabled, schedule);
+  `);
+  db.pragma('user_version = 15');
+  console.log('[db] schema v15 applied — triggers table');
 }
 
 // ─── V14: gdrive_tokens.folder_id ────────────────────────────────────────────

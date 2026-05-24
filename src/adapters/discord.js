@@ -1,4 +1,5 @@
 import { Client, Events, GatewayIntentBits, Partials, AttachmentBuilder, InteractionType } from 'discord.js';
+import cron from 'node-cron';
 import * as proactiveFeedback from '../proactive/feedback.js';
 import { registerSlashCommands } from '../discord/register.js';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
@@ -42,6 +43,11 @@ import {
   createWebhook,
   listWebhooks,
   deleteWebhook,
+  createTrigger,
+  listTriggers,
+  getTriggerById,
+  deleteTrigger,
+  toggleTrigger,
 } from '../memory/index.js';
 import { getDb } from '../memory/db.js';
 import { recordSkillInvocation } from '../memory/index.js';
@@ -1796,6 +1802,100 @@ export function start() {
           const sub  = interaction.options.getSubcommand();
           const name = interaction.options.getString('name') ?? '';
           await handleCommand(`/webhook ${sub} ${name}`.trim(), userId, platformId, 'discord', reply);
+          break;
+        }
+
+        case 'trigger': {
+          const sub = interaction.options.getSubcommand();
+          const { runTrigger, registerTriggerCron, unregisterTriggerCron } = await import('../triggers/index.js');
+
+          if (sub === 'create') {
+            const name     = interaction.options.getString('name');
+            const prompt   = interaction.options.getString('prompt');
+            const schedule = interaction.options.getString('schedule') ?? null;
+
+            if (schedule && !cron.validate(schedule)) {
+              await reply(`❌ Invalid cron expression: \`${schedule}\`\nExample: \`0 9 * * 1-5\` = 9am Mon–Fri`);
+              break;
+            }
+
+            const id = createTrigger(userId, { name, prompt, schedule, channelId: interaction.channelId, platform: 'discord' });
+
+            // Register cron job if scheduled
+            if (schedule) {
+              const trigger = getTriggerById(id);
+              registerTriggerCron(trigger);
+            }
+
+            const scheduleStr = schedule ? `\nSchedule: \`${schedule}\`` : `\nManual only (use \`/trigger run id:${id}\` to fire)`;
+            await reply(`✅ Trigger **${name}** created (ID: \`${id}\`)${scheduleStr}`);
+            break;
+          }
+
+          if (sub === 'list') {
+            const triggers = listTriggers(userId);
+            if (!triggers.length) {
+              await reply('No triggers yet. Use `/trigger create` to add one.');
+              break;
+            }
+            const lines = triggers.map((t) => {
+              const status  = t.enabled ? '🟢' : '🔴';
+              const sched   = t.schedule ? ` | \`${t.schedule}\`` : ' | manual';
+              const lastRun = t.last_run ? `<t:${Math.floor(t.last_run / 1000)}:R>` : 'never';
+              return `${status} \`${t.id}\` **${t.name}**${sched} | last run: ${lastRun} | runs: ${t.run_count}`;
+            });
+            await reply(`**Your triggers:**\n${lines.join('\n')}`);
+            break;
+          }
+
+          if (sub === 'run') {
+            const id = interaction.options.getString('id');
+            const trigger = getTriggerById(id);
+            if (!trigger || trigger.user_id !== userId) {
+              await reply(`❌ Trigger \`${id}\` not found.`);
+              break;
+            }
+            await interaction.deferReply();
+            const result = await runTrigger(id);
+            if (result.ok) {
+              await interaction.editReply(`✅ Trigger **${trigger.name}** ran successfully.`);
+            } else {
+              await interaction.editReply(`❌ Trigger failed: ${result.error}`);
+            }
+            break;
+          }
+
+          if (sub === 'delete') {
+            const id = interaction.options.getString('id');
+            const trigger = getTriggerById(id);
+            if (!trigger || trigger.user_id !== userId) {
+              await reply(`❌ Trigger \`${id}\` not found.`);
+              break;
+            }
+            unregisterTriggerCron(id);
+            deleteTrigger(id, userId);
+            await reply(`✅ Trigger **${trigger.name}** (\`${id}\`) deleted.`);
+            break;
+          }
+
+          if (sub === 'enable' || sub === 'disable') {
+            const id      = interaction.options.getString('id');
+            const enabled = sub === 'enable';
+            const trigger = getTriggerById(id);
+            if (!trigger || trigger.user_id !== userId) {
+              await reply(`❌ Trigger \`${id}\` not found.`);
+              break;
+            }
+            toggleTrigger(id, userId, enabled);
+            if (enabled && trigger.schedule) {
+              registerTriggerCron({ ...trigger, enabled: 1 });
+            } else if (!enabled) {
+              unregisterTriggerCron(id);
+            }
+            await reply(`✅ Trigger **${trigger.name}** ${enabled ? 'enabled' : 'disabled'}.`);
+            break;
+          }
+
           break;
         }
 
