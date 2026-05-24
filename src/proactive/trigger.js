@@ -12,6 +12,10 @@ const BROKEN_STREAK_SILENCE_MS = 24 * 60 * 60 * 1000; // silence window that tri
 const INTENT_CHECK_WINDOW_MS = 60 * 60 * 1000;   // max 1 Claude CLI call per user per hour
 const INTENT_MESSAGES_LIMIT = 20;                 // last N user messages fed to intent extractor
 const INTENT_LOOKBACK_MS = 3 * 24 * 60 * 60 * 1000; // only surface intents mentioned in last 3 days
+const THREAD_FOLLOWUP_SILENCE_MIN_MS = 2 * 60 * 60 * 1000;  // thread silent at least 2h
+const THREAD_FOLLOWUP_SILENCE_MAX_MS = 24 * 60 * 60 * 1000; // but not more than 24h (too stale)
+const THREAD_FOLLOWUP_CHECK_WINDOW_MS = 60 * 60 * 1000;     // max 1 LLM call per user per hour
+const THREAD_FOLLOWUP_MESSAGES = 10;                         // last N messages to assess completion
 
 function getStopwords() {
   return new Set(['how', 'what', 'why', 'when', 'where', 'who', 'is', 'are', 'was', 'the', 'my', 'your', 'a', 'an', 'i', 'me', 'it', 'do', 'does', 'can', 'could', 'would', 'should', 'to', 'of', 'in', 'on', 'at', 'for', 'with', 'this', 'that', 'have', 'has', 'not', 'be', 'been']);
@@ -215,16 +219,102 @@ Rules:
   };
 }
 
+async function checkActiveThreadFollowup(userId) {
+  const db = getDb();
+  const now = Date.now();
+
+  // Find threads silent between 2h and 24h
+  const thread = db.prepare(`
+    SELECT t.id, t.last_active, t.message_count, t.channel_id
+    FROM threads t
+    WHERE t.user_id = ?
+      AND t.last_active < ? AND t.last_active > ?
+    ORDER BY t.last_active DESC
+    LIMIT 1
+  `).get(userId, now - THREAD_FOLLOWUP_SILENCE_MIN_MS, now - THREAD_FOLLOWUP_SILENCE_MAX_MS);
+
+  if (!thread) return null;
+
+  // Per-user rate limit: at most one LLM call per hour
+  const rlKey = `proactive_thread_followup:${userId}`;
+  const lastCheck = parseInt(db.prepare('SELECT value FROM bot_state WHERE key = ?').get(rlKey)?.value ?? '0', 10);
+  if (now - lastCheck < THREAD_FOLLOWUP_CHECK_WINDOW_MS) return null;
+
+  // Fetch last N messages from that thread
+  const rows = db.prepare(`
+    SELECT role, content, ts FROM message_log
+    WHERE user_id = ? AND channel_id = ?
+    ORDER BY ts DESC LIMIT ?
+  `).all(userId, thread.channel_id, THREAD_FOLLOWUP_MESSAGES);
+
+  if (rows.length < 2) return null;
+
+  const transcript = rows
+    .slice()
+    .reverse()
+    .map(r => `[${r.role}]: ${(r.content ?? '').slice(0, 300)}`)
+    .join('\n');
+
+  const prompt = `You are reviewing a conversation to determine if it ended naturally or was interrupted mid-task.
+
+Conversation (oldest first):
+${transcript}
+
+Output ONLY a JSON object. No explanation, no markdown.
+If the thread appears incomplete or interrupted:
+{ "complete": false, "topic": "<1 short phrase describing what was being worked on, max 8 words>", "next_step": "<what should happen next, max 10 words>", "confidence": <0.0-1.0> }
+If the thread appears naturally complete:
+{ "complete": true }
+
+Rules:
+- "incomplete" means: the bot listed steps and stopped, the bot asked a question and got no reply, the user asked to do something and it was only partially done, or the bot ended with "shall I...", "want me to...", "next we'll..."
+- "complete" means: user said thanks/ok/done, bot gave a final summary, or the exchange reached a natural conclusion
+- confidence > 0.75 means you are quite sure it is incomplete`;
+
+  db.prepare('INSERT OR REPLACE INTO bot_state (key, value) VALUES (?, ?)').run(rlKey, String(now));
+
+  const result = spawnSync('claude', ['-p', prompt, '--max-tokens', '150'], {
+    encoding: 'utf8',
+    timeout: 20000,
+  });
+
+  if (result.status !== 0 || !result.stdout?.trim()) return null;
+
+  let parsed;
+  try {
+    const cleaned = result.stdout.trim().replace(/^```(?:json)?\n?/m, '').replace(/```\s*$/m, '').trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+
+  if (parsed?.complete !== false) return null;
+  if (!parsed.topic || typeof parsed.topic !== 'string') return null;
+
+  const confidence = typeof parsed.confidence === 'number'
+    ? Math.max(0, Math.min(1, parsed.confidence))
+    : 0.75;
+
+  const hoursAgo = Math.round((now - thread.last_active) / 3600000);
+  return {
+    template: 'ACTIVE_THREAD_FOLLOWUP',
+    confidence,
+    message: `We were working on **${parsed.topic.trim()}** ${hoursAgo}h ago — ${parsed.next_step?.trim() ?? 'want to pick it up?'}`,
+    context: `Thread incomplete: "${parsed.topic.trim()}" — next step: "${parsed.next_step?.trim()}"`,
+  };
+}
+
 export async function checkAll(userId) {
-  const [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent, brokenStreak] = await Promise.all([
+  const [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent, brokenStreak, activeThreadFollowup] = await Promise.all([
     checkUnresolvedThread(userId).catch(() => null),
     checkRepeatedQuestion(userId).catch(() => null),
     checkLongSilence(userId).catch(() => null),
     checkUnresolvedIntent(userId).catch(() => null),
     checkBrokenStreak(userId).catch(() => null),
+    checkActiveThreadFollowup(userId).catch(() => null),
   ]);
 
-  const hits = [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent, brokenStreak].filter(Boolean);
+  const hits = [unresolvedThread, repeatedQuestion, longSilence, unresolvedIntent, brokenStreak, activeThreadFollowup].filter(Boolean);
 
   // Filter by threshold
   const filtered = [];

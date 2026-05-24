@@ -20,7 +20,6 @@ import { getContext } from '../memory/index.js';
 import { scoreThread } from './quality.js';
 import { generateSkillMd, extractSkillName } from './template.js';
 import bus from '../core/events.js';
-import { runConcernChecks } from '../proactive/index.js';
 
 const tracer = trace.getTracer('claudebot', '2.0.0');
 const SKILLS_DIR = process.env.CLAUDE_SKILLS_DIR ?? path.join(os.homedir(), '.claude', 'skills');
@@ -33,13 +32,6 @@ const SKILL_SIZE_LIMIT = 64 * 1024; // 64 KB (Reviewer Concern #6)
 let _sendAlert = null;
 export function setSendAlert(fn) { _sendAlert = fn; }
 
-// Platform senders injected by scheduler for concern checks
-let _platformSenders = {};
-let _sendOwnerAlert = null;
-export function setPlatformSenders(senders, ownerAlert) {
-  _platformSenders = senders || {};
-  _sendOwnerAlert = ownerAlert || null;
-}
 
 export async function reviewCandidates() {
   const db = getDb();
@@ -55,7 +47,6 @@ export async function reviewCandidates() {
 
   for (const thread of candidates) {
     await reviewThread(thread.user_id, thread.tool_use_total, thread.channel_id ?? null);
-    await runConcernChecks(thread.user_id, {}, _platformSenders, _sendOwnerAlert).catch(() => {});
   }
 }
 

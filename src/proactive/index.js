@@ -149,6 +149,10 @@ export async function runScheduled(platformSenders, sendOwnerAlert) {
       } else if (hour === nightHour) {
         tasks.push(() => _runForUser(user, 'nightly_sync', platformSenders, sendOwnerAlert));
       }
+
+      // Concern checks run every minute for all users, independent of hour gating.
+      // Each individual check has its own internal rate limiting.
+      tasks.push(() => runConcernChecks(user.userId, user.prefs, platformSenders, sendOwnerAlert));
     }
 
     if (tasks.length) await runWithSemaphore(tasks, MAX_CONCURRENT);
