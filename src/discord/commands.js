@@ -144,4 +144,8 @@ export const commandDefs = [
   new SlashCommandBuilder()
     .setName('auth_gdrive')
     .setDescription('Connect your Google Drive so large files (>25 MB) upload there automatically'),
+
+  new SlashCommandBuilder()
+    .setName('regen')
+    .setDescription('Delete the last bot response and regenerate it'),
 ].map((cmd) => cmd.toJSON());
